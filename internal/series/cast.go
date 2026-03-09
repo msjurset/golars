@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // Cast converts the Series to the target data type.

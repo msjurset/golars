@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Sort returns a new DataFrame sorted by the named column. If descending is

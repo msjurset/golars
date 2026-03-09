@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/msjurseth/golars"
+	"github.com/msjurset/golars"
 )
 
 // ---------------------------------------------------------------------------

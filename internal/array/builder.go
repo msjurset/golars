@@ -1,8 +1,8 @@
 package array
 
 import (
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // Builder is the interface for building arrays incrementally.

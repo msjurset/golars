@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/msjurseth/golars"
+	"github.com/msjurset/golars"
 )
 
 func TestNewDataFrame(t *testing.T) {

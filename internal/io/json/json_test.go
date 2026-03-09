@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 func TestReadJSON(t *testing.T) {

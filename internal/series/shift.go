@@ -1,9 +1,9 @@
 package series
 
 import (
-	"github.com/msjurseth/golars/internal/array"
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // Shift returns a new Series with values shifted by n positions.

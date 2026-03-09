@@ -7,9 +7,9 @@ import (
 	"math"
 	"os"
 
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // ReadFile reads a Parquet file into a DataFrame.

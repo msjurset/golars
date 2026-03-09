@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // StrAccessor provides string operations on a String Series.

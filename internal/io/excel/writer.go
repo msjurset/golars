@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // WriteFile writes a DataFrame to an Excel .xlsx file.

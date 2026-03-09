@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // XML struct types for parsing XLSX shared strings.

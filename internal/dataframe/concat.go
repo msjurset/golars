@@ -3,8 +3,8 @@ package dataframe
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Concat vertically concatenates the given DataFrames. All DataFrames must

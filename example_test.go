@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/msjurseth/golars"
+	"github.com/msjurset/golars"
 )
 
 func ExampleNewDataFrame_basic() {

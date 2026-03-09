@@ -3,8 +3,8 @@ package dataframe
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Filter returns a new DataFrame containing only the rows where the boolean

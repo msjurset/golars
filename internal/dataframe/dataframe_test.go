@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // helper builds a simple 3-row DataFrame with columns "a" (Int64) and "b" (String).

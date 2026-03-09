@@ -3,7 +3,7 @@ package series
 import (
 	"math"
 
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // RollingMean computes the rolling mean with the given window size.

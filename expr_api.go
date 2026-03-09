@@ -1,6 +1,6 @@
 package golars
 
-import "github.com/msjurseth/golars/internal/expr"
+import "github.com/msjurset/golars/internal/expr"
 
 // Expr represents a composable expression that can be evaluated against a DataFrame.
 type Expr = expr.Expr

@@ -1,6 +1,6 @@
 # Golars
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/msjurseth/golars.svg)](https://pkg.go.dev/github.com/msjurseth/golars)
+[![Go Reference](https://pkg.go.dev/badge/github.com/msjurset/golars.svg)](https://pkg.go.dev/github.com/msjurset/golars)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A high-performance DataFrame library for Go, modeled after [Polars](https://pola.rs).
@@ -8,7 +8,7 @@ A high-performance DataFrame library for Go, modeled after [Polars](https://pola
 Golars brings the power of columnar data processing to Go with zero external dependencies, an expression-based API, lazy evaluation with query optimization, and comprehensive I/O support.
 
 ```go
-import "github.com/msjurseth/golars"
+import "github.com/msjurset/golars"
 ```
 
 ## Features
@@ -32,7 +32,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/msjurseth/golars"
+    "github.com/msjurset/golars"
 )
 
 func main() {

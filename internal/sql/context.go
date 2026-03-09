@@ -6,7 +6,7 @@ package sql
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/dataframe"
 )
 
 // Context holds registered DataFrames that can be queried via SQL.

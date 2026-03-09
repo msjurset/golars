@@ -1,8 +1,8 @@
 package lazy
 
 import (
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/expr"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/expr"
 )
 
 // LazyFrame represents a lazy computation over a DataFrame. Operations are

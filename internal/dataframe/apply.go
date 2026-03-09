@@ -3,7 +3,7 @@ package dataframe
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // MapRows applies a function to each row of the DataFrame and returns a new

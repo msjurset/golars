@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 func TestReadBasic(t *testing.T) {

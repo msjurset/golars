@@ -1,8 +1,8 @@
 package array
 
 import (
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/pool"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/pool"
 )
 
 // Ordered is a constraint that permits types supporting the < operator.

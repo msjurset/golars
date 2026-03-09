@@ -1,6 +1,6 @@
 package array
 
-import "github.com/msjurseth/golars/internal/bitmap"
+import "github.com/msjurset/golars/internal/bitmap"
 
 // CumSum returns a new array where each element is the cumulative sum of all
 // preceding valid elements. Null positions remain null and do not contribute

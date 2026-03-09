@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/msjurseth/golars/internal/array"
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // castExpr casts a series to a different data type.

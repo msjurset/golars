@@ -3,8 +3,8 @@ package dataframe
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Select returns a new DataFrame containing only the named columns, in the

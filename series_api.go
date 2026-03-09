@@ -1,6 +1,6 @@
 package golars
 
-import "github.com/msjurseth/golars/internal/series"
+import "github.com/msjurset/golars/internal/series"
 
 // NewInt8Series creates a new Series of int8 values.
 func NewInt8Series(name string, data []int8) *Series {

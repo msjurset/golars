@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // ReadSQL executes a SQL query against a database connection and returns

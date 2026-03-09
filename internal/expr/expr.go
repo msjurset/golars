@@ -5,10 +5,10 @@ package expr
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/array"
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Expr represents a composable expression that can be evaluated against a DataFrame.

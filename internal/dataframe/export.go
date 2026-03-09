@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // RowAccessor provides typed access to a single row of a DataFrame.

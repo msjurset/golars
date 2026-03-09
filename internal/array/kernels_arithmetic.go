@@ -1,8 +1,8 @@
 package array
 
 import (
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/pool"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/pool"
 )
 
 // Numeric is a constraint that permits all integer and floating-point types.

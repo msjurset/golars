@@ -1,7 +1,7 @@
 package array
 
 import (
-	"github.com/msjurseth/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/bitmap"
 )
 
 // FilterTyped returns a new TypedArray containing only the elements of arr

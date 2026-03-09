@@ -3,9 +3,9 @@ package sql
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/expr"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/expr"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // evalSQLExpr converts a SQL expression into a boolean Series mask.

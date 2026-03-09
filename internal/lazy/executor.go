@@ -3,9 +3,9 @@ package lazy
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/expr"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/expr"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Execute walks the logical plan bottom-up and produces a DataFrame.

@@ -7,8 +7,8 @@ package array
 import (
 	"fmt"
 
-	"github.com/msjurseth/golars/internal/bitmap"
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/bitmap"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // Array is the interface that all columnar array types implement.

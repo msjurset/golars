@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/expr"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/expr"
 )
 
 // PlanNodeType identifies the kind of operation a LogicalPlan node represents.

@@ -4,11 +4,11 @@ import (
 	"database/sql"
 	"io"
 
-	csvio "github.com/msjurseth/golars/internal/io/csv"
-	dbio "github.com/msjurseth/golars/internal/io/database"
-	excelio "github.com/msjurseth/golars/internal/io/excel"
-	jsonio "github.com/msjurseth/golars/internal/io/json"
-	parquetio "github.com/msjurseth/golars/internal/io/parquet"
+	csvio "github.com/msjurset/golars/internal/io/csv"
+	dbio "github.com/msjurset/golars/internal/io/database"
+	excelio "github.com/msjurset/golars/internal/io/excel"
+	jsonio "github.com/msjurset/golars/internal/io/json"
+	parquetio "github.com/msjurset/golars/internal/io/parquet"
 )
 
 // CSV read options re-exported as top-level functions.

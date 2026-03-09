@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/msjurseth/golars/internal/dataframe"
-	"github.com/msjurseth/golars/internal/expr"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/expr"
+	"github.com/msjurset/golars/internal/series"
 )
 
 func helperDF(t *testing.T) *dataframe.DataFrame {

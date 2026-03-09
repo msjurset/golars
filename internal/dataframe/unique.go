@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Unique returns a new DataFrame containing only unique rows based on the

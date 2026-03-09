@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // WriteFile writes Series columns as a JSON array-of-objects to a file.

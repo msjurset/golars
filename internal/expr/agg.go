@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/msjurseth/golars/internal/array"
-	"github.com/msjurseth/golars/internal/dtype"
-	"github.com/msjurseth/golars/internal/series"
+	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/series"
 )
 
 type aggOp int

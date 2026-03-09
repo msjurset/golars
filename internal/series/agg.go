@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/msjurseth/golars/internal/array"
-	"github.com/msjurseth/golars/internal/dtype"
+	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/dtype"
 )
 
 // Sum returns the sum of all non-null values as a float64.

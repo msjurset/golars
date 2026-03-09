@@ -5,7 +5,7 @@
 //
 // # Import
 //
-//	import "github.com/msjurseth/golars"
+//	import "github.com/msjurset/golars"
 //
 // All public types and functions are re-exported at the top level. Internal
 // sub-packages use Go's internal/ convention and cannot be imported directly.
