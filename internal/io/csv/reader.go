@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/msjurset/golars/internal/array"
@@ -162,8 +163,17 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 		colNames = filteredNames
 	}
 
-	// Read all data rows as strings
-	var rawRows [][]string
+	// Read data rows directly into per-column string slices (single pass).
+	// This avoids building a [][]string of all rows and then transposing.
+	numCols := len(colNames) // may be 0 if no header
+	var colData [][]string
+	if numCols > 0 {
+		colData = make([][]string, numCols)
+		for i := range colData {
+			colData[i] = make([]string, 0, 1024)
+		}
+	}
+
 	rowCount := 0
 	for scanner.Scan() {
 		if options.Ctx != nil {
@@ -196,7 +206,23 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 			fields = filtered
 		}
 
-		rawRows = append(rawRows, fields)
+		// On the first row without a header, determine numCols and allocate
+		if numCols == 0 {
+			numCols = len(fields)
+			colData = make([][]string, numCols)
+			for i := range colData {
+				colData[i] = make([]string, 0, 1024)
+			}
+		}
+
+		// Append each field to the corresponding column slice
+		for i := 0; i < numCols; i++ {
+			if i < len(fields) {
+				colData[i] = append(colData[i], fields[i])
+			} else {
+				colData[i] = append(colData[i], "")
+			}
+		}
 		rowCount++
 	}
 
@@ -205,10 +231,6 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 	}
 
 	// Generate column names if no header
-	numCols := 0
-	if len(rawRows) > 0 {
-		numCols = len(rawRows[0])
-	}
 	if !options.HasHeader {
 		colNames = make([]string, numCols)
 		for i := range colNames {
@@ -225,45 +247,137 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 		nullSet[nv] = struct{}{}
 	}
 
-	// Extract column data
-	colData := make([][]string, numCols)
-	for i := range colData {
-		colData[i] = make([]string, len(rawRows))
-	}
-	for rowIdx, row := range rawRows {
-		for colIdx := 0; colIdx < numCols; colIdx++ {
-			if colIdx < len(row) {
-				colData[colIdx][rowIdx] = row[colIdx]
-			}
-		}
-	}
-
-	// Infer types and build Series
+	// Infer types and build Series in parallel
 	result := make([]*series.Series, numCols)
+	errs := make([]error, numCols)
+
+	var wg sync.WaitGroup
 	for i := 0; i < numCols; i++ {
-		name := colNames[i]
-		dt := dtype.String
-		if options.Dtypes != nil {
-			if forced, ok := options.Dtypes[name]; ok {
-				dt = forced
-			} else {
-				dt = inferType(colData[i], nullSet, options.InferSchemaLen)
+		wg.Add(1)
+		go func(col int) {
+			defer wg.Done()
+			name := colNames[col]
+			var data []string
+			if col < len(colData) {
+				data = colData[col]
 			}
-		} else {
-			dt = inferType(colData[i], nullSet, options.InferSchemaLen)
-		}
-		s, err := buildSeries(name, colData[i], dt, nullSet)
+
+			dt := dtype.String
+			if options.Dtypes != nil {
+				if forced, ok := options.Dtypes[name]; ok {
+					dt = forced
+				} else {
+					dt = inferType(data, nullSet, options.InferSchemaLen)
+				}
+			} else {
+				dt = inferType(data, nullSet, options.InferSchemaLen)
+			}
+			s, err := buildSeries(name, data, dt, nullSet)
+			if err != nil {
+				errs[col] = fmt.Errorf("golars: csv: column %q: %w", name, err)
+				return
+			}
+			result[col] = s
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
 		if err != nil {
-			return nil, fmt.Errorf("golars: csv: column %q: %w", name, err)
+			return nil, err
 		}
-		result[i] = s
 	}
 
 	return result, nil
 }
 
 // parseLine splits a CSV line into fields respecting quotes.
+// It dispatches to an optimized ASCII byte-level parser when both separator
+// and quote character are in the ASCII range (the common case).
 func parseLine(line string, sep, quote rune) []string {
+	if sep < utf8.RuneSelf && quote < utf8.RuneSelf {
+		return parseLineASCII(line, byte(sep), byte(quote))
+	}
+	return parseLineRune(line, sep, quote)
+}
+
+// parseLineASCII is the fast path for ASCII separator and quote characters.
+// It works at the byte level, avoiding []rune conversion, and uses substring
+// slicing (zero-allocation) for unquoted fields.
+func parseLineASCII(line string, sep, quote byte) []string {
+	// Pre-count fields by counting unquoted separators for a single allocation.
+	n := 1
+	inQ := false
+	for i := 0; i < len(line); i++ {
+		if line[i] == quote {
+			inQ = !inQ
+		} else if line[i] == sep && !inQ {
+			n++
+		}
+	}
+
+	fields := make([]string, 0, n)
+	start := 0
+	inQ = false
+	hasQuote := false
+
+	for i := 0; i < len(line); i++ {
+		b := line[i]
+		if inQ {
+			if b == quote {
+				if i+1 < len(line) && line[i+1] == quote {
+					hasQuote = true
+					i++ // skip escaped quote
+				} else {
+					inQ = false
+				}
+			}
+		} else {
+			if b == quote {
+				inQ = true
+				hasQuote = true
+			} else if b == sep {
+				fields = append(fields, extractField(line[start:i], quote, hasQuote))
+				start = i + 1
+				hasQuote = false
+			}
+		}
+	}
+	fields = append(fields, extractField(line[start:], quote, hasQuote))
+	return fields
+}
+
+// extractField processes a raw field substring. If the field has no quotes it
+// is returned as-is (a zero-allocation substring of the original line). Quoted
+// fields have surrounding quotes stripped and escaped (doubled) quotes resolved.
+func extractField(s string, quote byte, hasQuote bool) string {
+	if !hasQuote {
+		return s // zero-allocation substring
+	}
+	// Strip surrounding quotes
+	if len(s) >= 2 && s[0] == quote && s[len(s)-1] == quote {
+		s = s[1 : len(s)-1]
+	}
+	// Only allocate if there are escaped quotes inside
+	if strings.IndexByte(s, quote) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == quote && i+1 < len(s) && s[i+1] == quote {
+			b.WriteByte(quote)
+			i++
+		} else {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// parseLineRune is the slow path for non-ASCII separator or quote characters.
+// It converts the line to runes and parses field by field.
+func parseLineRune(line string, sep, quote rune) []string {
 	var fields []string
 	var field strings.Builder
 	inQuotes := false
@@ -309,7 +423,7 @@ func inferType(values []string, nullSet map[string]struct{}, maxScan int) dtype.
 	seenNonNull := false
 
 	for i := 0; i < maxScan; i++ {
-		v := strings.TrimSpace(values[i])
+		v := trimSpaceFast(values[i])
 		if _, isNull := nullSet[v]; isNull {
 			continue
 		}
@@ -348,6 +462,19 @@ func inferType(values []string, nullSet map[string]struct{}, maxScan int) dtype.
 	return dtype.String
 }
 
+// trimSpaceFast is a fast-path TrimSpace that avoids calling strings.TrimSpace
+// when the string has no leading/trailing whitespace (the common case for CSV).
+func trimSpaceFast(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	// Fast check: if first and last bytes are not ASCII space characters, return as-is.
+	if s[0] > ' ' && s[len(s)-1] > ' ' {
+		return s
+	}
+	return strings.TrimSpace(s)
+}
+
 // buildSeries creates a Series from string values with the given type.
 func buildSeries(name string, values []string, dt dtype.DataType, nullSet map[string]struct{}) (*series.Series, error) {
 	n := len(values)
@@ -358,7 +485,7 @@ func buildSeries(name string, values []string, dt dtype.DataType, nullSet map[st
 		valid := make([]bool, n)
 		hasNulls := false
 		for i, v := range values {
-			v = strings.TrimSpace(v)
+			v = trimSpaceFast(v)
 			if _, isNull := nullSet[v]; isNull {
 				hasNulls = true
 				continue
@@ -380,7 +507,7 @@ func buildSeries(name string, values []string, dt dtype.DataType, nullSet map[st
 		valid := make([]bool, n)
 		hasNulls := false
 		for i, v := range values {
-			v = strings.TrimSpace(v)
+			v = trimSpaceFast(v)
 			if _, isNull := nullSet[v]; isNull {
 				hasNulls = true
 				continue
@@ -402,7 +529,7 @@ func buildSeries(name string, values []string, dt dtype.DataType, nullSet map[st
 		valid := make([]bool, n)
 		hasNulls := false
 		for i, v := range values {
-			v = strings.TrimSpace(v)
+			v = trimSpaceFast(v)
 			if _, isNull := nullSet[v]; isNull {
 				hasNulls = true
 				continue

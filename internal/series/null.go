@@ -157,19 +157,7 @@ func (s *Series) Take(indices []int) *Series {
 		}
 	case dtype.String:
 		if sa, ok := s.arr.(*array.StringArray); ok {
-			n := len(indices)
-			values := make([]string, n)
-			var validity *bitmap.Bitmap
-			if sa.Validity() != nil {
-				validity = bitmap.New(n)
-			}
-			for j, idx := range indices {
-				values[j] = sa.Value(idx)
-				if validity != nil && sa.IsNull(idx) {
-					validity.Clear(j)
-				}
-			}
-			return New(s.name, array.NewStringArray(values, validity))
+			return New(s.name, array.TakeString(sa, indices))
 		}
 	}
 	return s

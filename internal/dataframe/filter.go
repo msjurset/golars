@@ -23,11 +23,9 @@ func (df *DataFrame) Filter(mask *series.Series) (*DataFrame, error) {
 		return nil, fmt.Errorf("golars: filter mask length %d does not match DataFrame height %d", mask.Len(), df.height)
 	}
 
-	bm := bitmap.New(df.height)
-	for i := 0; i < df.height; i++ {
-		if mask.IsNull(i) || !ba.Value(i) {
-			bm.Clear(i)
-		}
+	bm := ba.DataBitmap().Clone()
+	if mask.HasNulls() {
+		bm = bm.And(mask.Validity())
 	}
 	return df.FilterMask(bm), nil
 }
