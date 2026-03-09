@@ -1,10 +1,13 @@
 package lazy
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/msjurset/golars/internal/dataframe"
 	"github.com/msjurset/golars/internal/expr"
+	csvio "github.com/msjurset/golars/internal/io/csv"
+	parquetio "github.com/msjurset/golars/internal/io/parquet"
 	"github.com/msjurset/golars/internal/series"
 )
 
@@ -37,6 +40,10 @@ func Execute(plan *LogicalPlan) (*dataframe.DataFrame, error) {
 		return executeDrop(plan)
 	case NodeRename:
 		return executeRename(plan)
+	case NodeScanCSV:
+		return executeScanCSV(plan)
+	case NodeScanParquet:
+		return executeScanParquet(plan)
 	default:
 		return nil, fmt.Errorf("golars: lazy: unknown plan node type %d", plan.nodeType)
 	}
@@ -45,6 +52,9 @@ func Execute(plan *LogicalPlan) (*dataframe.DataFrame, error) {
 func executeScan(plan *LogicalPlan) (*dataframe.DataFrame, error) {
 	if plan.df == nil {
 		return nil, fmt.Errorf("golars: lazy: scan node has no DataFrame")
+	}
+	if len(plan.projectionCols) > 0 {
+		return plan.df.Select(plan.projectionCols...)
 	}
 	return plan.df, nil
 }
@@ -130,6 +140,10 @@ func executeGroupBy(plan *LogicalPlan) (*dataframe.DataFrame, error) {
 		return nil, err
 	}
 
+	if len(plan.groupExprs) > 0 {
+		return grouped.AggExprs(plan.groupExprs...)
+	}
+
 	return grouped.Agg(plan.groupAggs)
 }
 
@@ -181,4 +195,114 @@ func executeRename(plan *LogicalPlan) (*dataframe.DataFrame, error) {
 	}
 
 	return input.Rename(plan.renameOld, plan.renameNew)
+}
+
+func executeScanCSV(plan *LogicalPlan) (*dataframe.DataFrame, error) {
+	opts := make([]csvio.ReadOption, len(plan.scanCSVOpts))
+	copy(opts, plan.scanCSVOpts)
+
+	// Apply pushed-down column projection.
+	if len(plan.scanProjection) > 0 {
+		opts = append(opts, csvio.WithColumns(plan.scanProjection...))
+	}
+
+	cols, err := csvio.ReadFile(plan.filePath, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("golars: lazy: scan_csv: %w", err)
+	}
+
+	df, err := dataframe.New(cols...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply pushed-down predicate.
+	if plan.scanPredicate != nil {
+		ctx := &expr.Context{DF: df}
+		mask, err := plan.scanPredicate.Evaluate(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("golars: lazy: scan_csv predicate: %w", err)
+		}
+		df, err = df.Filter(mask)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return df, nil
+}
+
+func executeScanParquet(plan *LogicalPlan) (*dataframe.DataFrame, error) {
+	df, err := parquetio.ReadFile(plan.filePath)
+	if err != nil {
+		return nil, fmt.Errorf("golars: lazy: scan_parquet: %w", err)
+	}
+
+	// Apply pushed-down column projection.
+	if len(plan.scanProjection) > 0 {
+		df, err = df.Select(plan.scanProjection...)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Apply pushed-down predicate.
+	if plan.scanPredicate != nil {
+		ctx := &expr.Context{DF: df}
+		mask, err := plan.scanPredicate.Evaluate(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("golars: lazy: scan_parquet predicate: %w", err)
+		}
+		df, err = df.Filter(mask)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return df, nil
+}
+
+// ExecuteWithContext walks the logical plan with cancellation checking.
+func ExecuteWithContext(ctx context.Context, plan *LogicalPlan) (*dataframe.DataFrame, error) {
+	if plan == nil {
+		return nil, fmt.Errorf("golars: lazy: nil plan")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Execute children with context first.
+	var input *dataframe.DataFrame
+	var err error
+	if plan.input != nil {
+		input, err = ExecuteWithContext(ctx, plan.input)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// For binary nodes (join).
+	var inputR *dataframe.DataFrame
+	if plan.inputR != nil {
+		inputR, err = ExecuteWithContext(ctx, plan.inputR)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Check context again after children.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Build a temporary plan with pre-computed inputs as scan nodes.
+	tempPlan := clonePlan(plan)
+	if input != nil {
+		tempPlan.input = &LogicalPlan{nodeType: NodeScan, df: input}
+	}
+	if inputR != nil {
+		tempPlan.inputR = &LogicalPlan{nodeType: NodeScan, df: inputR}
+	}
+
+	return Execute(tempPlan)
 }

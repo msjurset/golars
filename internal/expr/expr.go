@@ -25,6 +25,8 @@ type Expr interface {
 	Sub(other Expr) Expr
 	Mul(other Expr) Expr
 	Div(other Expr) Expr
+	Mod(other Expr) Expr
+	Pow(other Expr) Expr
 
 	// Comparison
 	Eq(other Expr) Expr
@@ -46,6 +48,10 @@ type Expr interface {
 	Max() Expr
 	Count() Expr
 	Std() Expr
+	Var() Expr
+	NUnique() Expr
+	Quantile(p float64) Expr
+	Median() Expr
 
 	// Null handling
 	IsNull() Expr
@@ -58,12 +64,61 @@ type Expr interface {
 
 	// Cast
 	Cast(dt dtype.DataType) Expr
+	TryCast(dt dtype.DataType) Expr
 
 	// Window
 	Over(partitionBy ...string) Expr
 
+	// Predicates
+	IsIn(values ...any) Expr
+	IsBetween(lower, upper Expr) Expr
+
+	// Rank
+	Rank() Expr
+
+	// Numeric math
+	Abs() Expr
+	Sqrt() Expr
+	Log() Expr
+	Exp() Expr
+	Round(decimals int) Expr
+	Floor() Expr
+	Ceil() Expr
+
+	// Additional aggregation
+	First() Expr
+	Last() Expr
+
+	// Row transforms
+	Shift(n int) Expr
+	Diff(n int) Expr
+	PctChange(n int) Expr
+
+	// Selection / slicing
+	Head(n int) Expr
+	Tail(n int) Expr
+	Gather(indices []int) Expr
+	Unique() Expr
+	SortBy(by Expr, descending bool) Expr
+
+	// Cumulative namespace
+	Cum() *CumNamespace
+
+	// Rolling namespace
+	Rolling(window int) *RollingNamespace
+
+	// Name namespace
+	Name() *NameNamespace
+
 	// String namespace
 	Str() *StrNamespace
+
+	// Temporal namespace
+	Dt() *DtNamespace
+
+	// Introspection
+	UsedColumns() []string
+	IsConstant() bool
 }
 
 // Context holds the evaluation context for expressions.
@@ -75,10 +130,14 @@ type Context struct {
 // embedding types can override Evaluate, Alias, and String.
 type baseExpr struct{}
 
+func (b baseExpr) UsedColumns() []string              { return nil }
+func (b baseExpr) IsConstant() bool                   { return false }
 func (b baseExpr) Add(other Expr) Expr               { return nil }
 func (b baseExpr) Sub(other Expr) Expr               { return nil }
 func (b baseExpr) Mul(other Expr) Expr               { return nil }
 func (b baseExpr) Div(other Expr) Expr               { return nil }
+func (b baseExpr) Mod(other Expr) Expr               { return nil }
+func (b baseExpr) Pow(other Expr) Expr               { return nil }
 func (b baseExpr) Eq(other Expr) Expr                { return nil }
 func (b baseExpr) Neq(other Expr) Expr               { return nil }
 func (b baseExpr) Lt(other Expr) Expr                { return nil }
@@ -94,14 +153,43 @@ func (b baseExpr) Min() Expr                         { return nil }
 func (b baseExpr) Max() Expr                         { return nil }
 func (b baseExpr) Count() Expr                       { return nil }
 func (b baseExpr) Std() Expr                         { return nil }
+func (b baseExpr) Var() Expr                         { return nil }
+func (b baseExpr) NUnique() Expr                     { return nil }
+func (b baseExpr) Quantile(p float64) Expr           { return nil }
+func (b baseExpr) Median() Expr                      { return nil }
 func (b baseExpr) IsNull() Expr                      { return nil }
 func (b baseExpr) IsNotNull() Expr                   { return nil }
 func (b baseExpr) FillNull(value Expr) Expr          { return nil }
 func (b baseExpr) Sort(descending bool) Expr         { return nil }
 func (b baseExpr) ArgSort(descending bool) Expr      { return nil }
 func (b baseExpr) Cast(dt dtype.DataType) Expr       { return nil }
-func (b baseExpr) Str() *StrNamespace                { return nil }
-func (b baseExpr) Over(partitionBy ...string) Expr   { return nil }
+func (b baseExpr) TryCast(dt dtype.DataType) Expr    { return nil }
+func (b baseExpr) Name() *NameNamespace              { return nil }
+func (b baseExpr) IsIn(values ...any) Expr            { return nil }
+func (b baseExpr) IsBetween(lower, upper Expr) Expr   { return nil }
+func (b baseExpr) Rank() Expr                         { return nil }
+func (b baseExpr) Abs() Expr                           { return nil }
+func (b baseExpr) Sqrt() Expr                          { return nil }
+func (b baseExpr) Log() Expr                           { return nil }
+func (b baseExpr) Exp() Expr                           { return nil }
+func (b baseExpr) Round(decimals int) Expr             { return nil }
+func (b baseExpr) Floor() Expr                         { return nil }
+func (b baseExpr) Ceil() Expr                          { return nil }
+func (b baseExpr) First() Expr                         { return nil }
+func (b baseExpr) Last() Expr                          { return nil }
+func (b baseExpr) Head(n int) Expr                     { return nil }
+func (b baseExpr) Tail(n int) Expr                     { return nil }
+func (b baseExpr) Gather(indices []int) Expr           { return nil }
+func (b baseExpr) Unique() Expr                        { return nil }
+func (b baseExpr) SortBy(by Expr, descending bool) Expr { return nil }
+func (b baseExpr) Str() *StrNamespace                 { return nil }
+func (b baseExpr) Dt() *DtNamespace                   { return nil }
+func (b baseExpr) Shift(n int) Expr                    { return nil }
+func (b baseExpr) Diff(n int) Expr                     { return nil }
+func (b baseExpr) PctChange(n int) Expr                { return nil }
+func (b baseExpr) Cum() *CumNamespace                  { return nil }
+func (b baseExpr) Rolling(window int) *RollingNamespace { return nil }
+func (b baseExpr) Over(partitionBy ...string) Expr    { return nil }
 func (b baseExpr) Alias(name string) Expr            { return nil }
 func (b baseExpr) Evaluate(*Context) (*series.Series, error) {
 	return nil, fmt.Errorf("golars: expression not implemented")
@@ -118,6 +206,8 @@ func (e *exprBase) Add(other Expr) Expr      { r := &binaryExpr{left: e.self, ri
 func (e *exprBase) Sub(other Expr) Expr      { r := &binaryExpr{left: e.self, right: other, op: opSub}; r.exprBase.self = r; return r }
 func (e *exprBase) Mul(other Expr) Expr      { r := &binaryExpr{left: e.self, right: other, op: opMul}; r.exprBase.self = r; return r }
 func (e *exprBase) Div(other Expr) Expr      { r := &binaryExpr{left: e.self, right: other, op: opDiv}; r.exprBase.self = r; return r }
+func (e *exprBase) Mod(other Expr) Expr      { r := &binaryExpr{left: e.self, right: other, op: opMod}; r.exprBase.self = r; return r }
+func (e *exprBase) Pow(other Expr) Expr      { r := &binaryExpr{left: e.self, right: other, op: opPow}; r.exprBase.self = r; return r }
 func (e *exprBase) Eq(other Expr) Expr       { r := &comparisonExpr{left: e.self, right: other, op: cmpEq}; r.exprBase.self = r; return r }
 func (e *exprBase) Neq(other Expr) Expr      { r := &comparisonExpr{left: e.self, right: other, op: cmpNeq}; r.exprBase.self = r; return r }
 func (e *exprBase) Lt(other Expr) Expr       { r := &comparisonExpr{left: e.self, right: other, op: cmpLt}; r.exprBase.self = r; return r }
@@ -133,13 +223,42 @@ func (e *exprBase) Min() Expr                { r := &aggExpr{inner: e.self, op: 
 func (e *exprBase) Max() Expr                { r := &aggExpr{inner: e.self, op: aggMax}; r.exprBase.self = r; return r }
 func (e *exprBase) Count() Expr              { r := &aggExpr{inner: e.self, op: aggCount}; r.exprBase.self = r; return r }
 func (e *exprBase) Std() Expr                { r := &aggExpr{inner: e.self, op: aggStd}; r.exprBase.self = r; return r }
+func (e *exprBase) Var() Expr                { r := &aggExpr{inner: e.self, op: aggVar}; r.exprBase.self = r; return r }
+func (e *exprBase) NUnique() Expr            { r := &aggExpr{inner: e.self, op: aggNUnique}; r.exprBase.self = r; return r }
+func (e *exprBase) Median() Expr             { r := &aggExpr{inner: e.self, op: aggMedian}; r.exprBase.self = r; return r }
+func (e *exprBase) Quantile(p float64) Expr  { r := &quantileExpr{inner: e.self, percentile: p}; r.exprBase.self = r; return r }
 func (e *exprBase) IsNull() Expr             { r := &isNullExpr{inner: e.self, negate: false}; r.exprBase.self = r; return r }
 func (e *exprBase) IsNotNull() Expr          { r := &isNullExpr{inner: e.self, negate: true}; r.exprBase.self = r; return r }
 func (e *exprBase) FillNull(value Expr) Expr { r := &fillNullExpr{inner: e.self, fill: value}; r.exprBase.self = r; return r }
 func (e *exprBase) Sort(descending bool) Expr    { r := &sortExpr{inner: e.self, descending: descending, argSort: false}; r.exprBase.self = r; return r }
 func (e *exprBase) ArgSort(descending bool) Expr { r := &sortExpr{inner: e.self, descending: descending, argSort: true}; r.exprBase.self = r; return r }
-func (e *exprBase) Cast(dt dtype.DataType) Expr  { r := &castExpr{inner: e.self, target: dt}; r.exprBase.self = r; return r }
+func (e *exprBase) Cast(dt dtype.DataType) Expr    { r := &castExpr{inner: e.self, target: dt}; r.exprBase.self = r; return r }
+func (e *exprBase) TryCast(dt dtype.DataType) Expr { r := &tryCastExpr{inner: e.self, target: dt}; r.exprBase.self = r; return r }
+func (e *exprBase) Name() *NameNamespace           { return &NameNamespace{inner: e.self} }
+func (e *exprBase) IsIn(values ...any) Expr      { r := &isInExpr{inner: e.self, values: values}; r.exprBase.self = r; return r }
+func (e *exprBase) IsBetween(lower, upper Expr) Expr { r := &isBetweenExpr{inner: e.self, lower: lower, upper: upper}; r.exprBase.self = r; return r }
+func (e *exprBase) Rank() Expr                   { r := &rankExpr{inner: e.self, method: "average"}; r.exprBase.self = r; return r }
+func (e *exprBase) Abs() Expr                    { r := &mathExpr{inner: e.self, op: mathAbs}; r.exprBase.self = r; return r }
+func (e *exprBase) Sqrt() Expr                   { r := &mathExpr{inner: e.self, op: mathSqrt}; r.exprBase.self = r; return r }
+func (e *exprBase) Log() Expr                    { r := &mathExpr{inner: e.self, op: mathLog}; r.exprBase.self = r; return r }
+func (e *exprBase) Exp() Expr                    { r := &mathExpr{inner: e.self, op: mathExp}; r.exprBase.self = r; return r }
+func (e *exprBase) Round(decimals int) Expr      { r := &roundExpr{inner: e.self, decimals: decimals}; r.exprBase.self = r; return r }
+func (e *exprBase) Floor() Expr                  { r := &mathExpr{inner: e.self, op: mathFloor}; r.exprBase.self = r; return r }
+func (e *exprBase) Ceil() Expr                   { r := &mathExpr{inner: e.self, op: mathCeil}; r.exprBase.self = r; return r }
+func (e *exprBase) First() Expr                  { r := &aggExpr{inner: e.self, op: aggFirst}; r.exprBase.self = r; return r }
+func (e *exprBase) Last() Expr                   { r := &aggExpr{inner: e.self, op: aggLast}; r.exprBase.self = r; return r }
+func (e *exprBase) Head(n int) Expr              { r := &headExpr{inner: e.self, n: n}; r.exprBase.self = r; return r }
+func (e *exprBase) Tail(n int) Expr              { r := &tailExpr{inner: e.self, n: n}; r.exprBase.self = r; return r }
+func (e *exprBase) Gather(indices []int) Expr    { r := &gatherExpr{inner: e.self, indices: indices}; r.exprBase.self = r; return r }
+func (e *exprBase) Unique() Expr                 { r := &uniqueExpr{inner: e.self}; r.exprBase.self = r; return r }
+func (e *exprBase) SortBy(by Expr, descending bool) Expr { r := &sortByExpr{inner: e.self, by: by, descending: descending}; r.exprBase.self = r; return r }
+func (e *exprBase) Shift(n int) Expr     { r := &shiftExpr{inner: e.self, n: n}; r.exprBase.self = r; return r }
+func (e *exprBase) Diff(n int) Expr      { r := &diffExpr{inner: e.self, n: n}; r.exprBase.self = r; return r }
+func (e *exprBase) PctChange(n int) Expr { r := &pctChangeExpr{inner: e.self, n: n}; r.exprBase.self = r; return r }
+func (e *exprBase) Cum() *CumNamespace              { return &CumNamespace{inner: e.self} }
+func (e *exprBase) Rolling(window int) *RollingNamespace { return &RollingNamespace{inner: e.self, window: window} }
 func (e *exprBase) Str() *StrNamespace           { return &StrNamespace{inner: e.self} }
+func (e *exprBase) Dt() *DtNamespace             { return &DtNamespace{inner: e.self} }
 func (e *exprBase) Over(partitionBy ...string) Expr { r := &windowExpr{inner: e.self, partitionBy: partitionBy}; r.exprBase.self = r; return r }
 func (e *exprBase) Alias(name string) Expr       { r := &aliasExpr{inner: e.self, name: name}; r.exprBase.self = r; return r }
 

@@ -2,6 +2,7 @@ package golars_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -478,6 +479,103 @@ func TestWindowOverIntegration(t *testing.T) {
 	}
 	if v2 != 35.0 {
 		t.Errorf("expected group 'b' mean 35.0, got %f", v2)
+	}
+}
+
+func TestGroupByAgg(t *testing.T) {
+	df, err := golars.NewDataFrame(
+		golars.NewStringSeries("group", []string{"a", "a", "b", "b", "b"}),
+		golars.NewFloat64Series("value", []float64{10, 20, 30, 40, 50}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := df.GroupBy("group")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := golars.GroupByAgg(g,
+		golars.Col("value").Sum().Alias("total"),
+		golars.Col("value").Mean().Alias("avg"),
+		golars.Col("value").Count().Alias("cnt"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Height() != 2 {
+		t.Errorf("expected 2 groups, got %d", result.Height())
+	}
+	if result.Width() != 4 { // group + total + avg + cnt
+		t.Errorf("expected 4 columns, got %d", result.Width())
+	}
+
+	// Check totals
+	total, err := result.Column("total")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v0, _ := total.GetFloat64(0) // group "a": 10+20=30
+	v1, _ := total.GetFloat64(1) // group "b": 30+40+50=120
+	if v0 != 30 {
+		t.Errorf("expected total 30 for group a, got %g", v0)
+	}
+	if v1 != 120 {
+		t.Errorf("expected total 120 for group b, got %g", v1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase F: Parquet Snappy + Context Cancellation
+// ---------------------------------------------------------------------------
+
+func TestParquetSnappy(t *testing.T) {
+	df, err := golars.NewDataFrame(
+		golars.NewStringSeries("name", []string{"Alice", "Bob", "Charlie"}),
+		golars.NewInt64Series("age", []int64{25, 30, 35}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write with snappy compression
+	path := t.TempDir() + "/test_snappy.parquet"
+	err = golars.WriteParquetFile(df, path, golars.WithParquetCompression("snappy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back
+	df2, err := golars.ReadParquet(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if df2.Height() != 3 {
+		t.Errorf("expected 3 rows, got %d", df2.Height())
+	}
+
+	col, _ := df2.Column("name")
+	v, _ := col.GetString(0)
+	if v != "Alice" {
+		t.Errorf("expected Alice, got %q", v)
+	}
+}
+
+func TestContextCancellation(t *testing.T) {
+	df, _ := golars.NewDataFrame(
+		golars.NewInt64Series("x", []int64{1, 2, 3}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel
+
+	lf := golars.Lazy(df).Select(golars.Col("x"))
+	_, err := lf.CollectWithContext(ctx)
+	if err == nil {
+		t.Error("expected error from cancelled context")
 	}
 }
 

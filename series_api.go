@@ -1,6 +1,10 @@
 package golars
 
-import "github.com/msjurset/golars/internal/series"
+import (
+	"time"
+
+	"github.com/msjurset/golars/internal/series"
+)
 
 // NewInt8Series creates a new Series of int8 values.
 func NewInt8Series(name string, data []int8) *Series {
@@ -81,4 +85,34 @@ func NewStringSeriesWithValidity(name string, data []string, valid []bool) *Seri
 // NewBooleanSeriesWithValidity creates a Boolean Series with explicit null tracking.
 func NewBooleanSeriesWithValidity(name string, data []bool, valid []bool) *Series {
 	return series.NewBooleanWithValidity(name, data, valid)
+}
+
+// NewDateSeries creates a new Series of Date values (days since Unix epoch as int32).
+func NewDateSeries(name string, data []int32) *Series { return series.NewDate(name, data) }
+
+// NewDateTimeSeries creates a new Series of DateTime values (microseconds since epoch as int64).
+func NewDateTimeSeries(name string, data []int64) *Series { return series.NewDateTime(name, data) }
+
+// NewTimeSeries creates a new Series of Time values (nanoseconds since midnight as int64).
+func NewTimeSeries(name string, data []int64) *Series { return series.NewTime(name, data) }
+
+// NewDurationSeries creates a new Series of Duration values (microseconds as int64).
+func NewDurationSeries(name string, data []int64) *Series { return series.NewDuration(name, data) }
+
+// NewDateSeriesFromTime creates a Date Series from a slice of time.Time values.
+func NewDateSeriesFromTime(name string, times []time.Time) *Series {
+	data := make([]int32, len(times))
+	for i, t := range times {
+		data[i] = int32(t.Unix() / 86400)
+	}
+	return series.NewDate(name, data)
+}
+
+// NewDateTimeSeriesFromTime creates a DateTime Series from a slice of time.Time values.
+func NewDateTimeSeriesFromTime(name string, times []time.Time) *Series {
+	data := make([]int64, len(times))
+	for i, t := range times {
+		data[i] = t.UnixMicro()
+	}
+	return series.NewDateTime(name, data)
 }

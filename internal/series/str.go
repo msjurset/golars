@@ -1,7 +1,11 @@
 package series
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/msjurset/golars/internal/dtype"
@@ -188,4 +192,141 @@ func (a *StrAccessor) Slice(start, length int) *Series {
 		}
 	}
 	return NewStringWithValidity(a.s.name, data, valid)
+}
+
+// Pad pads each string to the given width with fillChar.
+// side must be "left", "right", or "both".
+func (a *StrAccessor) Pad(width int, side string, fillChar rune) *Series {
+	n := a.s.Len()
+	data := make([]string, n)
+	valid := make([]bool, n)
+	fill := string(fillChar)
+	for i := 0; i < n; i++ {
+		if a.s.IsValid(i) {
+			v, _ := a.s.GetString(i)
+			runeLen := utf8.RuneCountInString(v)
+			padLen := width - runeLen
+			if padLen <= 0 {
+				data[i] = v
+			} else {
+				padding := strings.Repeat(fill, padLen)
+				switch side {
+				case "left":
+					data[i] = padding + v
+				case "right":
+					data[i] = v + padding
+				case "both":
+					left := padLen / 2
+					right := padLen - left
+					data[i] = strings.Repeat(fill, left) + v + strings.Repeat(fill, right)
+				default:
+					data[i] = v
+				}
+			}
+			valid[i] = true
+		}
+	}
+	return NewStringWithValidity(a.s.name, data, valid)
+}
+
+// Strip removes the given characters from both ends of each string.
+func (a *StrAccessor) Strip(chars string) *Series {
+	n := a.s.Len()
+	data := make([]string, n)
+	valid := make([]bool, n)
+	for i := 0; i < n; i++ {
+		if a.s.IsValid(i) {
+			v, _ := a.s.GetString(i)
+			data[i] = strings.Trim(v, chars)
+			valid[i] = true
+		}
+	}
+	return NewStringWithValidity(a.s.name, data, valid)
+}
+
+// Extract extracts the first match of a regex pattern, returning the given group.
+// groupIndex 0 returns the full match; 1+ return capture groups.
+func (a *StrAccessor) Extract(pattern string, groupIndex int) *Series {
+	n := a.s.Len()
+	data := make([]string, n)
+	valid := make([]bool, n)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return NewStringWithValidity(a.s.name, data, valid)
+	}
+	for i := 0; i < n; i++ {
+		if a.s.IsValid(i) {
+			v, _ := a.s.GetString(i)
+			matches := re.FindStringSubmatch(v)
+			if groupIndex < len(matches) {
+				data[i] = matches[groupIndex]
+				valid[i] = true
+			}
+		}
+	}
+	return NewStringWithValidity(a.s.name, data, valid)
+}
+
+// Capitalize returns a new String Series with the first character of each string uppercased
+// and the rest lowercased.
+func (a *StrAccessor) Capitalize() *Series {
+	n := a.s.Len()
+	data := make([]string, n)
+	valid := make([]bool, n)
+	for i := 0; i < n; i++ {
+		if a.s.IsValid(i) {
+			v, _ := a.s.GetString(i)
+			if len(v) == 0 {
+				data[i] = v
+			} else {
+				r, size := utf8.DecodeRuneInString(v)
+				data[i] = string(unicode.ToUpper(r)) + strings.ToLower(v[size:])
+			}
+			valid[i] = true
+		}
+	}
+	return NewStringWithValidity(a.s.name, data, valid)
+}
+
+// ZFill pads each string on the left with '0' to the given width.
+func (a *StrAccessor) ZFill(width int) *Series {
+	return a.Pad(width, "left", '0')
+}
+
+// ToDatetime parses each string into a DateTime Series using the given Go time layout.
+// Returns a DateTime Series (microseconds since epoch). Unparseable values become null.
+func (a *StrAccessor) ToDatetime(layout string) *Series {
+	n := a.s.Len()
+	data := make([]int64, n)
+	valid := make([]bool, n)
+	for i := 0; i < n; i++ {
+		if a.s.IsValid(i) {
+			v, _ := a.s.GetString(i)
+			t, err := time.Parse(layout, v)
+			if err == nil {
+				data[i] = t.UnixMicro()
+				valid[i] = true
+			}
+		}
+	}
+	return NewDateTimeWithValidity(fmt.Sprintf("%s_datetime", a.s.name), data, valid)
+}
+
+// CountMatches counts the number of non-overlapping matches of a regex pattern.
+func (a *StrAccessor) CountMatches(pattern string) *Series {
+	n := a.s.Len()
+	data := make([]int64, n)
+	valid := make([]bool, n)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return NewInt64WithValidity(a.s.name, data, valid)
+	}
+	for i := 0; i < n; i++ {
+		if a.s.IsValid(i) {
+			v, _ := a.s.GetString(i)
+			data[i] = int64(len(re.FindAllString(v, -1)))
+			valid[i] = true
+		}
+	}
+	return NewInt64WithValidity(a.s.name, data, valid)
 }

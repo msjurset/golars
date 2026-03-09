@@ -201,6 +201,73 @@ func (s *Series) int64ToBool() *Series {
 	return NewBoolean(s.name, data)
 }
 
+// TryCast attempts to cast the series to the target type, returning null on failure
+// instead of an error. This is a permissive version of Cast.
+func (s *Series) TryCast(target dtype.DataType) *Series {
+	if s.dtype == target {
+		return s
+	}
+	result, err := s.Cast(target)
+	if err != nil {
+		// The current Cast returns errors on unparseable values (String->Int64, String->Float64).
+		// TryCast should return null for those values instead.
+		return tryCastPermissive(s, target)
+	}
+	return result
+}
+
+func tryCastPermissive(s *Series, target dtype.DataType) *Series {
+	n := s.Len()
+
+	switch {
+	case s.dtype == dtype.String && target == dtype.Int64:
+		sa := s.StringArray()
+		if sa == nil {
+			return s
+		}
+		data := make([]int64, n)
+		valid := make([]bool, n)
+		for i := 0; i < n; i++ {
+			if s.IsNull(i) {
+				continue
+			}
+			v := sa.Value(i)
+			parsed, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				continue // null on failure
+			}
+			data[i] = parsed
+			valid[i] = true
+		}
+		return NewInt64WithValidity(s.name, data, valid)
+
+	case s.dtype == dtype.String && target == dtype.Float64:
+		sa := s.StringArray()
+		if sa == nil {
+			return s
+		}
+		data := make([]float64, n)
+		valid := make([]bool, n)
+		for i := 0; i < n; i++ {
+			if s.IsNull(i) {
+				continue
+			}
+			v := sa.Value(i)
+			parsed, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				continue // null on failure
+			}
+			data[i] = parsed
+			valid[i] = true
+		}
+		return NewFloat64WithValidity(s.name, data, valid)
+
+	default:
+		// For other unsupported casts, return all nulls
+		return NewFloat64WithValidity(s.name, make([]float64, n), make([]bool, n))
+	}
+}
+
 func (s *Series) boolToString() *Series {
 	n := s.Len()
 	data := make([]string, n)

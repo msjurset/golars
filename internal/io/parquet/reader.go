@@ -111,6 +111,19 @@ func Read(r io.ReadSeeker) (*dataframe.DataFrame, error) {
 
 		pageData := chunkData[headerLen : headerLen+int(ph.CompressedSize)]
 
+		// Decompress page data if needed.
+		codec, err := codecForID(cc.MetaData.Codec)
+		if err != nil {
+			return nil, fmt.Errorf("golars: parquet: column %q: %w", colName, err)
+		}
+		if cc.MetaData.Codec != CodecUncompressed {
+			dst := make([]byte, ph.UncompressedSize)
+			pageData, err = codec.Decompress(dst, pageData)
+			if err != nil {
+				return nil, fmt.Errorf("golars: parquet: decompressing column %q: %w", colName, err)
+			}
+		}
+
 		// Determine whether column is optional.
 		isOptional := true
 		if se, ok := schemaMap[colName]; ok {

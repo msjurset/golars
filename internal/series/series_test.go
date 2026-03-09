@@ -777,5 +777,150 @@ func TestSeries_Take_String(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Rank
+// ---------------------------------------------------------------------------
+
+func TestSeriesRank(t *testing.T) {
+	s := NewFloat64("x", []float64{30, 10, 20, 10})
+
+	t.Run("average", func(t *testing.T) {
+		r := s.Rank("average")
+		// sorted: 10(1),10(2),20(3),30(4) -> ties at 10 get avg rank 1.5
+		v0, _ := r.GetFloat64(0) // 30 -> rank 4
+		v1, _ := r.GetFloat64(1) // 10 -> rank 1.5
+		v2, _ := r.GetFloat64(2) // 20 -> rank 3
+		v3, _ := r.GetFloat64(3) // 10 -> rank 1.5
+		if v0 != 4 || v1 != 1.5 || v2 != 3 || v3 != 1.5 {
+			t.Errorf("average: got [%g,%g,%g,%g], want [4,1.5,3,1.5]", v0, v1, v2, v3)
+		}
+	})
+
+	t.Run("dense", func(t *testing.T) {
+		r := s.Rank("dense")
+		v0, _ := r.GetFloat64(0) // 30 -> dense rank 3
+		v1, _ := r.GetFloat64(1) // 10 -> dense rank 1
+		v2, _ := r.GetFloat64(2) // 20 -> dense rank 2
+		if v0 != 3 || v1 != 1 || v2 != 2 {
+			t.Errorf("dense: got [%g,%g,%g], want [3,1,2]", v0, v1, v2)
+		}
+	})
+
+	t.Run("min", func(t *testing.T) {
+		r := s.Rank("min")
+		v1, _ := r.GetFloat64(1) // 10 -> min rank 1
+		v3, _ := r.GetFloat64(3) // 10 -> min rank 1
+		if v1 != 1 || v3 != 1 {
+			t.Errorf("min: expected both 10s to have rank 1, got %g and %g", v1, v3)
+		}
+	})
+
+	t.Run("max", func(t *testing.T) {
+		r := s.Rank("max")
+		v1, _ := r.GetFloat64(1) // 10 -> max rank 2
+		v3, _ := r.GetFloat64(3) // 10 -> max rank 2
+		if v1 != 2 || v3 != 2 {
+			t.Errorf("max: expected both 10s to have rank 2, got %g and %g", v1, v3)
+		}
+	})
+
+	t.Run("ordinal", func(t *testing.T) {
+		r := s.Rank("ordinal")
+		v0, _ := r.GetFloat64(0) // 30 -> rank 4
+		v1, _ := r.GetFloat64(1) // first 10 -> rank 1
+		v3, _ := r.GetFloat64(3) // second 10 -> rank 2
+		if v0 != 4 || v1 != 1 || v3 != 2 {
+			t.Errorf("ordinal: got [%g,...,%g,...,%g], want [4,...,1,...,2]", v0, v1, v3)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Phase E: Interpolate
+// ---------------------------------------------------------------------------
+
+func TestInterpolateLinear(t *testing.T) {
+	s := NewFloat64WithValidity("x", []float64{1, 0, 0, 4}, []bool{true, false, false, true})
+	result := s.Interpolate("linear")
+
+	// 1, ?, ?, 4 -> 1, 2, 3, 4
+	v1, ok := result.GetFloat64(1)
+	if !ok || v1 != 2.0 {
+		t.Errorf("linear interpolate [1]: got %g, want 2.0", v1)
+	}
+	v2, ok := result.GetFloat64(2)
+	if !ok || v2 != 3.0 {
+		t.Errorf("linear interpolate [2]: got %g, want 3.0", v2)
+	}
+}
+
+func TestInterpolatePad(t *testing.T) {
+	s := NewFloat64WithValidity("x", []float64{1, 0, 3, 0}, []bool{true, false, true, false})
+	result := s.Interpolate("pad")
+
+	// 1, null, 3, null -> 1, 1, 3, 3
+	v1, ok := result.GetFloat64(1)
+	if !ok || v1 != 1.0 {
+		t.Errorf("pad [1]: got %g, want 1.0", v1)
+	}
+	v3, ok := result.GetFloat64(3)
+	if !ok || v3 != 3.0 {
+		t.Errorf("pad [3]: got %g, want 3.0", v3)
+	}
+}
+
+func TestInterpolateBfill(t *testing.T) {
+	s := NewFloat64WithValidity("x", []float64{0, 2, 0, 4}, []bool{false, true, false, true})
+	result := s.Interpolate("bfill")
+
+	// null, 2, null, 4 -> 2, 2, 4, 4
+	v0, ok := result.GetFloat64(0)
+	if !ok || v0 != 2.0 {
+		t.Errorf("bfill [0]: got %g, want 2.0", v0)
+	}
+	v2, ok := result.GetFloat64(2)
+	if !ok || v2 != 4.0 {
+		t.Errorf("bfill [2]: got %g, want 4.0", v2)
+	}
+}
+
+func TestInterpolateLeadingTrailingNulls(t *testing.T) {
+	s := NewFloat64WithValidity("x", []float64{0, 1, 0, 3, 0}, []bool{false, true, false, true, false})
+	result := s.Interpolate("linear")
+
+	// Leading null stays null, middle interpolated, trailing null stays null
+	if result.IsValid(0) {
+		t.Error("leading null should remain null")
+	}
+	v2, ok := result.GetFloat64(2)
+	if !ok || v2 != 2.0 {
+		t.Errorf("linear [2]: got %g, want 2.0", v2)
+	}
+	if result.IsValid(4) {
+		t.Error("trailing null should remain null")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase H: TryCast
+// ---------------------------------------------------------------------------
+
+func TestTryCast(t *testing.T) {
+	s := NewString("x", []string{"1", "abc", "3"})
+	result := s.TryCast(dtype.Int64)
+
+	v0, ok := result.GetInt64(0)
+	if !ok || v0 != 1 {
+		t.Errorf("[0]: got %d, want 1", v0)
+	}
+	if !result.IsNull(1) {
+		t.Error("[1]: expected null for 'abc'")
+	}
+	v2, ok := result.GetInt64(2)
+	if !ok || v2 != 3 {
+		t.Errorf("[2]: got %d, want 3", v2)
+	}
+}
+
 // Ensure unused import is used
 var _ = bitmap.New

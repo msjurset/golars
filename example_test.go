@@ -485,3 +485,146 @@ func Example_windowOver() {
 	// B: 35.0
 	// B: 35.0
 }
+
+func Example_mathExpressions() {
+	df, _ := golars.NewDataFrame(
+		golars.NewFloat64Series("x", []float64{-2.5, 4.0, 9.0, 1.0}),
+	)
+	ctx := &golars.ExprContext{DF: df}
+
+	// Abs
+	abs, _ := golars.Col("x").Abs().Evaluate(ctx)
+	for i := 0; i < abs.Len(); i++ {
+		v, _ := abs.GetFloat64(i)
+		if i > 0 {
+			fmt.Print(" ")
+		}
+		fmt.Printf("%.1f", v)
+	}
+	fmt.Println()
+
+	// Round
+	df2, _ := golars.NewDataFrame(golars.NewFloat64Series("v", []float64{3.14159, 2.71828}))
+	ctx2 := &golars.ExprContext{DF: df2}
+	rounded, _ := golars.Col("v").Round(2).Evaluate(ctx2)
+	for i := 0; i < rounded.Len(); i++ {
+		v, _ := rounded.GetFloat64(i)
+		if i > 0 {
+			fmt.Print(" ")
+		}
+		fmt.Printf("%.2f", v)
+	}
+	fmt.Println()
+	// Output:
+	// 2.5 4.0 9.0 1.0
+	// 3.14 2.72
+}
+
+func Example_cumulativeRolling() {
+	df, _ := golars.NewDataFrame(
+		golars.NewInt64Series("x", []int64{1, 2, 3, 4, 5}),
+	)
+	ctx := &golars.ExprContext{DF: df}
+
+	// Cumulative sum
+	cumSum, _ := golars.Col("x").Cum().Sum().Evaluate(ctx)
+	for i := 0; i < cumSum.Len(); i++ {
+		v, _ := cumSum.GetInt64(i)
+		if i > 0 {
+			fmt.Print(" ")
+		}
+		fmt.Printf("%d", v)
+	}
+	fmt.Println()
+
+	// Rolling mean (window=3)
+	rollMean, _ := golars.Col("x").Cast(golars.Float64).Rolling(3).Mean().Evaluate(ctx)
+	for i := 0; i < rollMean.Len(); i++ {
+		if i > 0 {
+			fmt.Print(" ")
+		}
+		if rollMean.IsNull(i) {
+			fmt.Print("null")
+		} else {
+			v, _ := rollMean.GetFloat64(i)
+			fmt.Printf("%.1f", v)
+		}
+	}
+	fmt.Println()
+	// Output:
+	// 1 3 6 10 15
+	// null null 2.0 3.0 4.0
+}
+
+func Example_shiftDiffPctChange() {
+	df, _ := golars.NewDataFrame(
+		golars.NewFloat64Series("price", []float64{100, 105, 103, 110}),
+	)
+	ctx := &golars.ExprContext{DF: df}
+
+	// Percentage change
+	pct, _ := golars.Col("price").PctChange(1).Evaluate(ctx)
+	for i := 0; i < pct.Len(); i++ {
+		if pct.IsNull(i) {
+			fmt.Print("null ")
+		} else {
+			v, _ := pct.GetFloat64(i)
+			fmt.Printf("%.4f ", v)
+		}
+	}
+	fmt.Println()
+	// Output:
+	// null 0.0500 -0.0190 0.0680
+}
+
+func Example_sortBy() {
+	df, _ := golars.NewDataFrame(
+		golars.NewStringSeries("name", []string{"Alice", "Bob", "Charlie"}),
+		golars.NewInt64Series("score", []int64{90, 70, 80}),
+	)
+	ctx := &golars.ExprContext{DF: df}
+
+	// Sort names by score (ascending)
+	sorted, _ := golars.Col("name").SortBy(golars.Col("score"), false).Evaluate(ctx)
+	for i := 0; i < sorted.Len(); i++ {
+		v, _ := sorted.GetString(i)
+		fmt.Println(v)
+	}
+	// Output:
+	// Bob
+	// Charlie
+	// Alice
+}
+
+func Example_strCapitalize() {
+	df, _ := golars.NewDataFrame(
+		golars.NewStringSeries("word", []string{"hello world", "FOO BAR", "go lang"}),
+	)
+	ctx := &golars.ExprContext{DF: df}
+
+	capped, _ := golars.Col("word").Str().Capitalize().Evaluate(ctx)
+	for i := 0; i < capped.Len(); i++ {
+		v, _ := capped.GetString(i)
+		fmt.Println(v)
+	}
+	// Output:
+	// Hello world
+	// Foo bar
+	// Go lang
+}
+
+func Example_firstLastExpr() {
+	df, _ := golars.NewDataFrame(
+		golars.NewStringSeries("name", []string{"Alice", "Bob", "Charlie"}),
+	)
+	ctx := &golars.ExprContext{DF: df}
+
+	first, _ := golars.Col("name").First().Evaluate(ctx)
+	last, _ := golars.Col("name").Last().Evaluate(ctx)
+
+	v1, _ := first.GetString(0)
+	v2, _ := last.GetString(0)
+	fmt.Printf("first=%s last=%s\n", v1, v2)
+	// Output:
+	// first=Alice last=Charlie
+}

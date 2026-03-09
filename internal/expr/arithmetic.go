@@ -2,8 +2,10 @@ package expr
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/bitmap"
 	"github.com/msjurset/golars/internal/dtype"
 	"github.com/msjurset/golars/internal/series"
 )
@@ -15,6 +17,8 @@ const (
 	opSub
 	opMul
 	opDiv
+	opMod
+	opPow
 )
 
 var binaryOpNames = [...]string{
@@ -22,6 +26,8 @@ var binaryOpNames = [...]string{
 	opSub: "-",
 	opMul: "*",
 	opDiv: "/",
+	opMod: "%",
+	opPow: "**",
 }
 
 // binaryExpr evaluates a binary arithmetic operation on two expressions.
@@ -69,6 +75,19 @@ func (b *binaryExpr) String() string {
 func applyArithmetic(left, right *series.Series, op binaryOp) (*series.Series, error) {
 	lt, rt := left.DataType(), right.DataType()
 
+	// Pow always operates on float64
+	if op == opPow {
+		lf, err := promoteToFloat64(left)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := promoteToFloat64(right)
+		if err != nil {
+			return nil, err
+		}
+		return arithmeticFloat64(lf, rf, op)
+	}
+
 	// Same type fast paths
 	if lt == rt {
 		switch lt {
@@ -109,6 +128,8 @@ func arithmeticInt64(left, right *series.Series, op binaryOp) (*series.Series, e
 		result = array.Mul(la, ra)
 	case opDiv:
 		result = array.Div(la, ra)
+	case opMod:
+		result = array.Mod(la, ra)
 	default:
 		return nil, fmt.Errorf("golars: unknown arithmetic op %d", op)
 	}
@@ -128,6 +149,24 @@ func arithmeticFloat64(left, right *series.Series, op binaryOp) (*series.Series,
 		result = array.Mul(la, ra)
 	case opDiv:
 		result = array.Div(la, ra)
+	case opMod:
+		av, bv := la.Values(), ra.Values()
+		n := la.Len()
+		res := make([]float64, n)
+		for i := 0; i < n; i++ {
+			res[i] = math.Mod(av[i], bv[i])
+		}
+		var validity *bitmap.Bitmap
+		if la.Validity() != nil && ra.Validity() != nil {
+			validity = la.Validity().And(ra.Validity())
+		} else if la.Validity() != nil {
+			validity = la.Validity().Clone()
+		} else if ra.Validity() != nil {
+			validity = ra.Validity().Clone()
+		}
+		result = array.NewTypedArray(res, dtype.Float64, validity)
+	case opPow:
+		result = array.Pow(la, ra)
 	default:
 		return nil, fmt.Errorf("golars: unknown arithmetic op %d", op)
 	}

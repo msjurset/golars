@@ -31,6 +31,7 @@ const (
 // Codec types.
 const (
 	CodecUncompressed = 0
+	CodecSnappy       = 2
 )
 
 // Page types.

@@ -1,6 +1,8 @@
 package lazy
 
 import (
+	"context"
+
 	"github.com/msjurset/golars/internal/dataframe"
 	"github.com/msjurset/golars/internal/expr"
 )
@@ -150,6 +152,12 @@ func (lf *LazyFrame) Collect() (*dataframe.DataFrame, error) {
 	return Execute(optimized)
 }
 
+// CollectWithContext materializes the lazy plan with cancellation support.
+func (lf *LazyFrame) CollectWithContext(ctx context.Context) (*dataframe.DataFrame, error) {
+	optimized := Optimize(lf.plan)
+	return ExecuteWithContext(ctx, optimized)
+}
+
 // Explain returns a human-readable representation of the logical plan.
 func (lf *LazyFrame) Explain() string {
 	return lf.plan.String()
@@ -174,6 +182,18 @@ func (g *LazyGroupBy) Agg(aggs map[string]dataframe.AggFunc) *LazyFrame {
 			input:     g.lf.plan,
 			groupKeys: g.keys,
 			groupAggs: aggs,
+		},
+	}
+}
+
+// AggExprs applies expression-based aggregations and returns a new LazyFrame.
+func (g *LazyGroupBy) AggExprs(exprs ...dataframe.GroupByExpr) *LazyFrame {
+	return &LazyFrame{
+		plan: &LogicalPlan{
+			nodeType:   NodeGroupBy,
+			input:      g.lf.plan,
+			groupKeys:  g.keys,
+			groupExprs: exprs,
 		},
 	}
 }

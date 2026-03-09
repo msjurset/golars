@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/msjurset/golars/internal/array"
 	"github.com/msjurset/golars/internal/dataframe"
@@ -14,22 +15,53 @@ import (
 	"github.com/msjurset/golars/internal/series"
 )
 
+// WriteOption is a functional option for Parquet writing.
+type WriteOption func(*writeOptions)
+
+type writeOptions struct {
+	codec Codec
+}
+
+func defaultWriteOptions() writeOptions {
+	return writeOptions{
+		codec: &uncompressedCodec{},
+	}
+}
+
+// WithCompression sets the compression codec for Parquet writing.
+// Supported values: "none" (or "uncompressed"), "snappy".
+func WithCompression(codec string) WriteOption {
+	return func(o *writeOptions) {
+		switch strings.ToLower(codec) {
+		case "snappy":
+			o.codec = &snappyCodec{}
+		default:
+			o.codec = &uncompressedCodec{}
+		}
+	}
+}
+
 // WriteFile writes a DataFrame to a Parquet file at the given path.
-func WriteFile(path string, df *dataframe.DataFrame) error {
+func WriteFile(path string, df *dataframe.DataFrame, opts ...WriteOption) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("golars: parquet: creating file: %w", err)
 	}
 	defer f.Close()
 
-	if err := Write(f, df); err != nil {
+	if err := Write(f, df, opts...); err != nil {
 		return err
 	}
 	return f.Close()
 }
 
 // Write writes a DataFrame as Parquet to an io.Writer.
-func Write(w io.Writer, df *dataframe.DataFrame) error {
+func Write(w io.Writer, df *dataframe.DataFrame, opts ...WriteOption) error {
+	options := defaultWriteOptions()
+	for _, o := range opts {
+		o(&options)
+	}
+
 	// Write magic.
 	if _, err := w.Write(magic[:]); err != nil {
 		return fmt.Errorf("golars: parquet: writing magic: %w", err)
@@ -41,9 +73,10 @@ func Write(w io.Writer, df *dataframe.DataFrame) error {
 
 	// Encode each column's data page and track offsets.
 	type colPage struct {
-		headerBytes []byte
-		dataBytes   []byte
-		offset      int64
+		headerBytes    []byte
+		dataBytes      []byte
+		offset         int64
+		uncompressedSz int32
 	}
 
 	var pages []colPage
@@ -55,10 +88,14 @@ func Write(w io.Writer, df *dataframe.DataFrame) error {
 			return err
 		}
 
+		uncompressedSize := int32(len(pageData))
+		compressed := options.codec.Compress(pageData)
+		compressedSize := int32(len(compressed))
+
 		ph := &pageHeader{
 			Type:              PageDataPage,
-			UncompressedSize:  int32(len(pageData)),
-			CompressedSize:    int32(len(pageData)),
+			UncompressedSize:  uncompressedSize,
+			CompressedSize:    compressedSize,
 			HasDataPageHeader: true,
 			DataPageNumValues: int32(col.Len()),
 			DataPageEncoding:  EncodingPlain,
@@ -68,11 +105,12 @@ func Write(w io.Writer, df *dataframe.DataFrame) error {
 		headerData := encodePageHeader(ph)
 
 		pages = append(pages, colPage{
-			headerBytes: headerData,
-			dataBytes:   pageData,
-			offset:      offset,
+			headerBytes:    headerData,
+			dataBytes:      compressed,
+			offset:         offset,
+			uncompressedSz: uncompressedSize,
 		})
-		offset += int64(len(headerData)) + int64(len(pageData))
+		offset += int64(len(headerData)) + int64(len(compressed))
 	}
 
 	// Write all column data pages.
@@ -90,18 +128,21 @@ func Write(w io.Writer, df *dataframe.DataFrame) error {
 	chunks := make([]columnChunk, numCols)
 	var totalByteSize int64
 
+	codecID := options.codec.CodecID()
+
 	for i, p := range pages {
-		totalSize := int64(len(p.headerBytes)) + int64(len(p.dataBytes))
-		totalByteSize += totalSize
+		totalCompressed := int64(len(p.headerBytes)) + int64(len(p.dataBytes))
+		totalUncompressed := int64(len(p.headerBytes)) + int64(p.uncompressedSz)
+		totalByteSize += totalCompressed
 		chunks[i] = columnChunk{
 			FileOffset: p.offset,
 			MetaData: columnMetaData{
 				Type:                  golarsTypeToParquet(columns[i].DataType()),
 				PathInSchema:          []string{columns[i].Name()},
-				Codec:                 CodecUncompressed,
+				Codec:                 codecID,
 				NumValues:             int64(columns[i].Len()),
-				TotalUncompressedSize: totalSize,
-				TotalCompressedSize:   totalSize,
+				TotalUncompressedSize: totalUncompressed,
+				TotalCompressedSize:   totalCompressed,
 				DataPageOffset:        p.offset,
 			},
 		}
@@ -346,4 +387,3 @@ func encodeColumnData(col *series.Series) ([]byte, error) {
 
 	return buf.Bytes(), nil
 }
-

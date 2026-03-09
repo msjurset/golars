@@ -1,6 +1,8 @@
 package array
 
 import (
+	"math"
+
 	"github.com/msjurset/golars/internal/bitmap"
 	"github.com/msjurset/golars/internal/pool"
 )
@@ -105,6 +107,20 @@ func Mod[T Integer](a, b *TypedArray[T]) *TypedArray[T] {
 	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
 		for i := start; i < end; i++ {
 			result[i] = av[i] % bv[i]
+		}
+	})
+	return NewTypedArray(result, a.DataType(), mergeValidity(a.Validity(), b.Validity()))
+}
+
+// Pow returns a new float64 array whose elements are a[i] raised to the power of b[i].
+// Null values propagate through the operation.
+func Pow(a, b *TypedArray[float64]) *TypedArray[float64] {
+	n := a.Len()
+	result := make([]float64, n)
+	av, bv := a.Values(), b.Values()
+	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
+		for i := start; i < end; i++ {
+			result[i] = math.Pow(av[i], bv[i])
 		}
 	})
 	return NewTypedArray(result, a.DataType(), mergeValidity(a.Validity(), b.Validity()))

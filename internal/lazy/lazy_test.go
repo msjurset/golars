@@ -212,6 +212,25 @@ func TestLazyExplain(t *testing.T) {
 	}
 }
 
+func TestLazyGroupByExprs(t *testing.T) {
+	df, _ := dataframe.New(
+		series.NewString("grp", []string{"a", "a", "b", "b"}),
+		series.NewFloat64("val", []float64{10, 20, 30, 40}),
+	)
+
+	lf := FromDataFrame(df).
+		GroupBy("grp").
+		Agg(map[string]dataframe.AggFunc{"val": dataframe.AggSum})
+
+	result, err := lf.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Height() != 2 {
+		t.Errorf("expected 2 groups, got %d", result.Height())
+	}
+}
+
 func TestOptimizerPredicatePushdown(t *testing.T) {
 	df := helperDF(t)
 	// Build: Filter(Sort(Scan(df)))
@@ -236,5 +255,97 @@ func TestOptimizerPredicatePushdown(t *testing.T) {
 	}
 	if result.Height() != 3 {
 		t.Errorf("expected 3 rows, got %d", result.Height())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase D: Projection Pushdown + Constant Folding
+// ---------------------------------------------------------------------------
+
+func TestOptimizerProjectionPushdown(t *testing.T) {
+	df := helperDF(t) // has columns a, b, c
+	lf := FromDataFrame(df).
+		Select(expr.Col("a"), expr.Col("b"))
+
+	optimized := lf.ExplainOptimized()
+	// The optimized plan should show projection on the scan node
+	if !strings.Contains(optimized, "SCAN") {
+		t.Error("optimized plan should contain SCAN")
+	}
+
+	result, err := lf.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Width() != 2 {
+		t.Errorf("expected 2 columns, got %d", result.Width())
+	}
+}
+
+func TestOptimizerConstantFolding(t *testing.T) {
+	df := helperDF(t)
+	// Lit(2) + Lit(3) should fold to Lit(5)
+	lf := FromDataFrame(df).
+		Select(expr.Col("a"), expr.Lit(2).Add(expr.Lit(3)))
+
+	result, err := lf.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Width() != 2 {
+		t.Fatalf("expected 2 columns, got %d", result.Width())
+	}
+	// The second column is the constant-folded result
+	constCol := result.ColumnByIndex(1)
+	if constCol == nil {
+		t.Fatal("expected second column to exist")
+	}
+	for i := 0; i < constCol.Len(); i++ {
+		v, _ := constCol.GetInt64(i)
+		if v != 5 {
+			t.Errorf("row %d: expected 5, got %d", i, v)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase G: ScanCSV / ScanParquet plan construction
+// ---------------------------------------------------------------------------
+
+func TestScanCSVPlan(t *testing.T) {
+	lf := ScanCSV("/tmp/test.csv")
+	plan := lf.Explain()
+	if !strings.Contains(plan, "SCAN_CSV") {
+		t.Error("expected SCAN_CSV in plan")
+	}
+}
+
+func TestScanParquetPlan(t *testing.T) {
+	lf := ScanParquet("/tmp/test.parquet")
+	plan := lf.Explain()
+	if !strings.Contains(plan, "SCAN_PARQUET") {
+		t.Error("expected SCAN_PARQUET in plan")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase H: Common Subexpression Elimination
+// ---------------------------------------------------------------------------
+
+func TestOptimizerCSE(t *testing.T) {
+	df := helperDF(t)
+	// Two identical expressions should be deduplicated
+	e := expr.Col("a").Add(expr.Lit(1))
+	lf := FromDataFrame(df).
+		Select(e, expr.Col("b"), e)
+
+	result, err := lf.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CSE should deduplicate, but the result should still be valid
+	if result.Height() != 5 {
+		t.Errorf("expected 5 rows, got %d", result.Height())
 	}
 }

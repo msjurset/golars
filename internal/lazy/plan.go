@@ -6,6 +6,7 @@ import (
 
 	"github.com/msjurset/golars/internal/dataframe"
 	"github.com/msjurset/golars/internal/expr"
+	csvio "github.com/msjurset/golars/internal/io/csv"
 )
 
 // PlanNodeType identifies the kind of operation a LogicalPlan node represents.
@@ -23,6 +24,8 @@ const (
 	NodeUnique
 	NodeDrop
 	NodeRename
+	NodeScanCSV
+	NodeScanParquet
 )
 
 // LogicalPlan represents a node in the logical query plan DAG.
@@ -37,15 +40,23 @@ type LogicalPlan struct {
 	selectExprs []expr.Expr                // for Select/WithColumns
 	sortCols    []string                   // for Sort
 	sortDesc    []bool                     // for Sort
-	groupKeys   []string                   // for GroupBy
-	groupAggs   map[string]dataframe.AggFunc // for GroupBy
+	groupKeys   []string                      // for GroupBy
+	groupAggs   map[string]dataframe.AggFunc // for GroupBy (map-based)
+	groupExprs  []dataframe.GroupByExpr      // for GroupBy (expr-based)
 	joinOn      []string                   // for Join
 	joinType    dataframe.JoinType         // for Join
 	limit       int                        // for Limit
 	uniqueSub   []string                   // for Unique
 	dropCols    []string                   // for Drop
-	renameOld   string                     // for Rename
-	renameNew   string                     // for Rename
+	renameOld      string                     // for Rename
+	renameNew      string                     // for Rename
+	projectionCols []string                   // for Scan (projection pushdown)
+
+	// Scan file nodes
+	filePath       string             // for ScanCSV/ScanParquet
+	scanCSVOpts    []csvio.ReadOption // for ScanCSV
+	scanPredicate  expr.Expr          // pushed-down filter for scan nodes
+	scanProjection []string           // pushed-down columns for scan nodes
 }
 
 // String returns a human-readable, indented representation of the plan tree.
@@ -67,7 +78,11 @@ func formatPlan(p *LogicalPlan, depth int) string {
 		if p.df != nil {
 			h, w = p.df.Shape()
 		}
-		line = fmt.Sprintf("%sSCAN [DataFrame: %dx%d]", indent, h, w)
+		if len(p.projectionCols) > 0 {
+			line = fmt.Sprintf("%sSCAN [DataFrame: %dx%d, projection: %v]", indent, h, w, p.projectionCols)
+		} else {
+			line = fmt.Sprintf("%sSCAN [DataFrame: %dx%d]", indent, h, w)
+		}
 	case NodeFilter:
 		exprStr := "<nil>"
 		if p.filterExpr != nil {
@@ -97,11 +112,15 @@ func formatPlan(p *LogicalPlan, depth int) string {
 		}
 		line = fmt.Sprintf("%sSORT [%s]", indent, strings.Join(parts, ", "))
 	case NodeGroupBy:
-		aggs := make([]string, 0, len(p.groupAggs))
-		for col, fn := range p.groupAggs {
-			aggs = append(aggs, fmt.Sprintf("%s(%s)", aggFuncName(fn), col))
+		if len(p.groupExprs) > 0 {
+			line = fmt.Sprintf("%sGROUPBY [keys: %v, exprs: %d]", indent, p.groupKeys, len(p.groupExprs))
+		} else {
+			aggs := make([]string, 0, len(p.groupAggs))
+			for col, fn := range p.groupAggs {
+				aggs = append(aggs, fmt.Sprintf("%s(%s)", aggFuncName(fn), col))
+			}
+			line = fmt.Sprintf("%sGROUPBY [keys: %v, aggs: %s]", indent, p.groupKeys, strings.Join(aggs, ", "))
 		}
-		line = fmt.Sprintf("%sGROUPBY [keys: %v, aggs: %s]", indent, p.groupKeys, strings.Join(aggs, ", "))
 	case NodeJoin:
 		line = fmt.Sprintf("%sJOIN [on: %v, how: %s]", indent, p.joinOn, joinTypeName(p.joinType))
 	case NodeLimit:
@@ -112,6 +131,22 @@ func formatPlan(p *LogicalPlan, depth int) string {
 		line = fmt.Sprintf("%sDROP [cols: %v]", indent, p.dropCols)
 	case NodeRename:
 		line = fmt.Sprintf("%sRENAME [%q -> %q]", indent, p.renameOld, p.renameNew)
+	case NodeScanCSV:
+		line = fmt.Sprintf("%sSCAN_CSV [file: %s]", indent, p.filePath)
+		if len(p.scanProjection) > 0 {
+			line += fmt.Sprintf(" [proj: %v]", p.scanProjection)
+		}
+		if p.scanPredicate != nil {
+			line += fmt.Sprintf(" [pred: %s]", p.scanPredicate.String())
+		}
+	case NodeScanParquet:
+		line = fmt.Sprintf("%sSCAN_PARQUET [file: %s]", indent, p.filePath)
+		if len(p.scanProjection) > 0 {
+			line += fmt.Sprintf(" [proj: %v]", p.scanProjection)
+		}
+		if p.scanPredicate != nil {
+			line += fmt.Sprintf(" [pred: %s]", p.scanPredicate.String())
+		}
 	default:
 		line = fmt.Sprintf("%sUNKNOWN", indent)
 	}

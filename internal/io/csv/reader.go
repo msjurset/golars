@@ -3,6 +3,7 @@ package csv
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +31,7 @@ type ReadOptions struct {
 	CommentChar      rune
 	TruncateLines    bool // if true, short rows are padded with nulls
 	NRows            int  // max rows to read (0 = all)
+	Ctx              context.Context
 }
 
 // DefaultReadOptions returns sensible defaults for CSV reading.
@@ -89,6 +91,11 @@ func WithSkipRows(n int) ReadOption {
 // WithNRows limits reading to at most n rows of data.
 func WithNRows(n int) ReadOption {
 	return func(o *ReadOptions) { o.NRows = n }
+}
+
+// WithContext sets a context for cancellation during CSV reading.
+func WithContext(ctx context.Context) ReadOption {
+	return func(o *ReadOptions) { o.Ctx = ctx }
 }
 
 // ReadFile reads a CSV file into column data.
@@ -159,6 +166,11 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 	var rawRows [][]string
 	rowCount := 0
 	for scanner.Scan() {
+		if options.Ctx != nil {
+			if err := options.Ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		if options.NRows > 0 && rowCount >= options.NRows {
 			break
 		}

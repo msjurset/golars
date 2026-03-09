@@ -17,6 +17,18 @@ type ThenBuilder = expr.ThenBuilder
 // StrNamespace provides string operations on expressions.
 type StrNamespace = expr.StrNamespace
 
+// DtNamespace provides temporal operations on expressions.
+type DtNamespace = expr.DtNamespace
+
+// NameNamespace provides operations on expression output names.
+type NameNamespace = expr.NameNamespace
+
+// CumNamespace provides cumulative operations on expressions.
+type CumNamespace = expr.CumNamespace
+
+// RollingNamespace provides rolling window operations on expressions.
+type RollingNamespace = expr.RollingNamespace
+
 // Col creates a column reference expression.
 func Col(name string) Expr { return expr.Col(name) }
 

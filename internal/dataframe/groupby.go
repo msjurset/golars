@@ -382,6 +382,160 @@ func applyFirstLast(col *series.Series, hashes []string, groups map[string][]int
 	}
 }
 
+// GroupByExpr is an interface for expression-based GroupBy aggregation.
+// This avoids circular imports between dataframe and expr packages.
+type GroupByExpr interface {
+	EvaluateGroupBy(df *DataFrame) (*series.Series, error)
+}
+
+// AggExprs applies expression-based aggregations to each group.
+func (g *GroupByResult) AggExprs(exprs ...GroupByExpr) (*DataFrame, error) {
+	nGroups := len(g.groupKeys)
+
+	// Build key columns (same as in Agg)
+	keyCols := make([]*series.Series, len(g.keys))
+	for i, key := range g.keys {
+		keyCol, _ := g.df.Column(key)
+		keyCols[i] = buildGroupKeyColumn(key, keyCol.DataType(), g.groupKeys, i, nGroups)
+	}
+
+	// Get ordered hashes for group iteration
+	orderedHashes := make([]string, nGroups)
+	for i, gk := range g.groupKeys {
+		if len(gk) == 1 {
+			orderedHashes[i] = fmt.Sprintf("%v", gk[0])
+		} else {
+			h := ""
+			for j, v := range gk {
+				if j > 0 {
+					h += "\x00"
+				}
+				h += fmt.Sprintf("%v", v)
+			}
+			orderedHashes[i] = h
+		}
+	}
+
+	// Evaluate each expression per group
+	aggCols := make([]*series.Series, len(exprs))
+	for ei, gbe := range exprs {
+		// For each group, build a sub-DataFrame, evaluate the expression, collect scalar results
+		results := make([]*series.Series, nGroups)
+		for gi, hash := range orderedHashes {
+			indices := g.groups[hash]
+			subCols := make([]*series.Series, len(g.df.Columns()))
+			for ci, col := range g.df.Columns() {
+				subCols[ci] = col.Take(indices)
+			}
+			subDF, err := New(subCols...)
+			if err != nil {
+				return nil, fmt.Errorf("golars: groupby expr: %w", err)
+			}
+			result, err := gbe.EvaluateGroupBy(subDF)
+			if err != nil {
+				return nil, fmt.Errorf("golars: groupby expr: %w", err)
+			}
+			results[gi] = result
+		}
+
+		// Collect results into a single column using the first result's name
+		colName := ""
+		if nGroups > 0 {
+			colName = results[0].Name()
+		}
+		aggCol, err := collectGroupResults(colName, results, nGroups)
+		if err != nil {
+			return nil, err
+		}
+		aggCols[ei] = aggCol
+	}
+
+	allCols := make([]*series.Series, 0, len(keyCols)+len(aggCols))
+	allCols = append(allCols, keyCols...)
+	allCols = append(allCols, aggCols...)
+
+	return New(allCols...)
+}
+
+func collectGroupResults(name string, results []*series.Series, nGroups int) (*series.Series, error) {
+	if nGroups == 0 {
+		return series.NewFloat64(name, nil), nil
+	}
+
+	// Determine result type from first result
+	dt := results[0].DataType()
+
+	switch dt {
+	case dtype.Float64:
+		data := make([]float64, nGroups)
+		valid := make([]bool, nGroups)
+		for i, r := range results {
+			if r.Len() > 0 && r.IsValid(0) {
+				v, _ := r.GetFloat64(0)
+				data[i] = v
+				valid[i] = true
+			}
+		}
+		if hasAnyFalse(valid) {
+			return series.NewFloat64WithValidity(name, data, valid), nil
+		}
+		return series.NewFloat64(name, data), nil
+	case dtype.Int64:
+		data := make([]int64, nGroups)
+		valid := make([]bool, nGroups)
+		for i, r := range results {
+			if r.Len() > 0 && r.IsValid(0) {
+				v, _ := r.GetInt64(0)
+				data[i] = v
+				valid[i] = true
+			}
+		}
+		if hasAnyFalse(valid) {
+			return series.NewInt64WithValidity(name, data, valid), nil
+		}
+		return series.NewInt64(name, data), nil
+	case dtype.String:
+		data := make([]string, nGroups)
+		valid := make([]bool, nGroups)
+		for i, r := range results {
+			if r.Len() > 0 && r.IsValid(0) {
+				v, _ := r.GetString(0)
+				data[i] = v
+				valid[i] = true
+			}
+		}
+		if hasAnyFalse(valid) {
+			return series.NewStringWithValidity(name, data, valid), nil
+		}
+		return series.NewString(name, data), nil
+	case dtype.Boolean:
+		data := make([]bool, nGroups)
+		valid := make([]bool, nGroups)
+		for i, r := range results {
+			if r.Len() > 0 && r.IsValid(0) {
+				v, _ := r.GetBool(0)
+				data[i] = v
+				valid[i] = true
+			}
+		}
+		if hasAnyFalse(valid) {
+			return series.NewBooleanWithValidity(name, data, valid), nil
+		}
+		return series.NewBoolean(name, data), nil
+	default:
+		return nil, fmt.Errorf("golars: groupby expr: unsupported result type %s", dt)
+	}
+}
+
+func hasAnyFalse(valid []bool) bool {
+	for _, v := range valid {
+		if !v {
+			return true
+		}
+	}
+	return false
+}
+
 // Ensure imports are used.
 var _ = array.NewInt64Array
 var _ = bitmap.New

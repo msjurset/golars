@@ -139,6 +139,92 @@ func NewBooleanWithValidity(name string, data []bool, valid []bool) *Series {
 	return New(name, array.NewBooleanArray(data, v))
 }
 
+// NewDate creates a new Series of Date values (days since Unix epoch as int32).
+func NewDate(name string, data []int32) *Series {
+	return New(name, array.NewTypedArray(data, dtype.Date, nil))
+}
+
+// NewDateTime creates a new Series of DateTime values (microseconds since epoch as int64).
+func NewDateTime(name string, data []int64) *Series {
+	return New(name, array.NewTypedArray(data, dtype.DateTime, nil))
+}
+
+// NewTime creates a new Series of Time values (nanoseconds since midnight as int64).
+func NewTime(name string, data []int64) *Series {
+	return New(name, array.NewTypedArray(data, dtype.Time, nil))
+}
+
+// NewDuration creates a new Series of Duration values (microseconds as int64).
+func NewDuration(name string, data []int64) *Series {
+	return New(name, array.NewTypedArray(data, dtype.Duration, nil))
+}
+
+// NewDateWithValidity creates a Date Series with explicit null tracking.
+func NewDateWithValidity(name string, data []int32, valid []bool) *Series {
+	v := bitmap.New(len(data))
+	for i, ok := range valid {
+		if !ok {
+			v.Clear(i)
+		}
+	}
+	return New(name, array.NewTypedArray(data, dtype.Date, v))
+}
+
+// NewDateTimeWithValidity creates a DateTime Series with explicit null tracking.
+func NewDateTimeWithValidity(name string, data []int64, valid []bool) *Series {
+	v := bitmap.New(len(data))
+	for i, ok := range valid {
+		if !ok {
+			v.Clear(i)
+		}
+	}
+	return New(name, array.NewTypedArray(data, dtype.DateTime, v))
+}
+
+// NewTimeWithValidity creates a Time Series with explicit null tracking.
+func NewTimeWithValidity(name string, data []int64, valid []bool) *Series {
+	v := bitmap.New(len(data))
+	for i, ok := range valid {
+		if !ok {
+			v.Clear(i)
+		}
+	}
+	return New(name, array.NewTypedArray(data, dtype.Time, v))
+}
+
+// NewDurationWithValidity creates a Duration Series with explicit null tracking.
+func NewDurationWithValidity(name string, data []int64, valid []bool) *Series {
+	v := bitmap.New(len(data))
+	for i, ok := range valid {
+		if !ok {
+			v.Clear(i)
+		}
+	}
+	return New(name, array.NewTypedArray(data, dtype.Duration, v))
+}
+
+// NewInt32WithValidity creates an Int32 Series with explicit null tracking.
+func NewInt32WithValidity(name string, data []int32, valid []bool) *Series {
+	v := bitmap.New(len(data))
+	for i, ok := range valid {
+		if !ok {
+			v.Clear(i)
+		}
+	}
+	return New(name, array.NewInt32Array(data, v))
+}
+
+// GetInt32 returns the int32 value at index i and whether it's valid.
+func (s *Series) GetInt32(i int) (int32, bool) {
+	if s.arr.IsNull(i) {
+		return 0, false
+	}
+	if ta, ok := s.arr.(*array.TypedArray[int32]); ok {
+		return ta.Value(i), true
+	}
+	return 0, false
+}
+
 // Name returns the name of the series.
 func (s *Series) Name() string { return s.name }
 

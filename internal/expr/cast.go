@@ -145,6 +145,28 @@ func castSeries(s *series.Series, target dtype.DataType) (*series.Series, error)
 	}
 }
 
+// tryCastExpr casts a series to a different data type, returning null on failure.
+type tryCastExpr struct {
+	exprBase
+	inner  Expr
+	target dtype.DataType
+}
+
+func (e *tryCastExpr) Evaluate(ctx *Context) (*series.Series, error) {
+	s, err := e.inner.Evaluate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.DataType() == e.target {
+		return s, nil
+	}
+	return s.TryCast(e.target), nil
+}
+
+func (e *tryCastExpr) String() string {
+	return fmt.Sprintf("%s.try_cast(%s)", e.inner.String(), e.target)
+}
+
 // validBools returns a bool slice indicating which elements are valid (non-null).
 func validBools(s *series.Series) []bool {
 	n := s.Len()

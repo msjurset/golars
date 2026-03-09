@@ -1,6 +1,7 @@
 package golars
 
 import (
+	"context"
 	"database/sql"
 	"io"
 
@@ -8,6 +9,7 @@ import (
 	dbio "github.com/msjurset/golars/internal/io/database"
 	excelio "github.com/msjurset/golars/internal/io/excel"
 	jsonio "github.com/msjurset/golars/internal/io/json"
+	"github.com/msjurset/golars/internal/lazy"
 	parquetio "github.com/msjurset/golars/internal/io/parquet"
 )
 
@@ -42,6 +44,12 @@ func WriteCSV(df *DataFrame, w io.Writer, opts ...csvio.WriteOption) error {
 // WriteCSVFile writes a DataFrame to a CSV file at the given path.
 func WriteCSVFile(df *DataFrame, path string, opts ...csvio.WriteOption) error {
 	return csvio.WriteFile(path, df.Columns(), opts...)
+}
+
+// ReadCSVWithContext reads a CSV file into a DataFrame with cancellation support.
+func ReadCSVWithContext(ctx context.Context, path string, opts ...ReadCSVOption) (*DataFrame, error) {
+	opts = append(opts, csvio.WithContext(ctx))
+	return ReadCSV(path, opts...)
 }
 
 // CSV option re-exports for convenience.
@@ -145,14 +153,21 @@ func ReadParquetFromReader(r io.ReadSeeker) (*DataFrame, error) {
 	return parquetio.Read(r)
 }
 
+// WriteParquetOption is a functional option for Parquet writing.
+type WriteParquetOption = parquetio.WriteOption
+
+// WithParquetCompression sets the compression codec for Parquet writing.
+// Supported values: "none" (or "uncompressed"), "snappy".
+var WithParquetCompression = parquetio.WithCompression
+
 // WriteParquet writes a DataFrame as Parquet to an io.Writer.
-func WriteParquet(df *DataFrame, w io.Writer) error {
-	return parquetio.Write(w, df)
+func WriteParquet(df *DataFrame, w io.Writer, opts ...WriteParquetOption) error {
+	return parquetio.Write(w, df, opts...)
 }
 
 // WriteParquetFile writes a DataFrame to a Parquet file at the given path.
-func WriteParquetFile(df *DataFrame, path string) error {
-	return parquetio.WriteFile(path, df)
+func WriteParquetFile(df *DataFrame, path string, opts ...WriteParquetOption) error {
+	return parquetio.WriteFile(path, df, opts...)
 }
 
 // Excel I/O
@@ -175,4 +190,16 @@ func WriteExcel(df *DataFrame, w io.Writer) error {
 // WriteExcelFile writes a DataFrame to an Excel .xlsx file at the given path.
 func WriteExcelFile(df *DataFrame, path string) error {
 	return excelio.WriteFile(path, df)
+}
+
+// Lazy scan constructors
+
+// ScanCSV creates a LazyFrame that defers reading a CSV file until Collect.
+func ScanCSV(path string, opts ...ReadCSVOption) *LazyFrame {
+	return lazy.ScanCSV(path, opts...)
+}
+
+// ScanParquet creates a LazyFrame that defers reading a Parquet file until Collect.
+func ScanParquet(path string) *LazyFrame {
+	return lazy.ScanParquet(path)
 }
