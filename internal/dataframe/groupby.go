@@ -1,6 +1,7 @@
 package dataframe
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"unsafe"
@@ -44,6 +45,16 @@ func hashCombine(hash, value uint64) uint64 {
 func hashString(hash uint64, s string) uint64 {
 	for i := 0; i < len(s); i++ {
 		hash ^= uint64(s[i])
+		hash *= fnvPrime64
+	}
+	return hash
+}
+
+// hashStringBytes hashes raw bytes into the running hash using FNV-1a,
+// avoiding the string allocation of hashString.
+func hashStringBytes(hash uint64, data []byte) uint64 {
+	for _, b := range data {
+		hash ^= uint64(b)
 		hash *= fnvPrime64
 	}
 	return hash
@@ -128,7 +139,7 @@ func (ch *colHasher) hashValue(hash uint64, i int) uint64 {
 		}
 	case dtype.String:
 		if ch.strings != nil {
-			return hashString(hash, ch.strings.Value(i))
+			return hashStringBytes(hash, ch.strings.ValueBytes(i))
 		}
 	case dtype.Boolean:
 		if ch.booleans != nil {
@@ -204,7 +215,7 @@ func rowsEqual(hashers []colHasher, i, j int) bool {
 			}
 		case dtype.String:
 			if ch.strings != nil {
-				if ch.strings.Value(i) != ch.strings.Value(j) {
+				if !bytes.Equal(ch.strings.ValueBytes(i), ch.strings.ValueBytes(j)) {
 					return false
 				}
 			}
@@ -516,73 +527,117 @@ func applyGroupAgg(col *series.Series, groupOrder []uint64, groups map[uint64][]
 }
 
 func applyNumericGroupAgg(col *series.Series, groupOrder []uint64, groups map[uint64][]int, fn AggFunc, n int, name string) (*series.Series, error) {
+	switch col.DataType() {
+	case dtype.Int64, dtype.DateTime, dtype.Time, dtype.Duration:
+		return applyGroupAggTyped[int64](col, groupOrder, groups, fn, n, name)
+	case dtype.Float64:
+		return applyGroupAggTyped[float64](col, groupOrder, groups, fn, n, name)
+	case dtype.Int32, dtype.Date:
+		return applyGroupAggTyped[int32](col, groupOrder, groups, fn, n, name)
+	case dtype.Float32:
+		return applyGroupAggTyped[float32](col, groupOrder, groups, fn, n, name)
+	case dtype.Int16:
+		return applyGroupAggTyped[int16](col, groupOrder, groups, fn, n, name)
+	case dtype.Int8:
+		return applyGroupAggTyped[int8](col, groupOrder, groups, fn, n, name)
+	case dtype.UInt64:
+		return applyGroupAggTyped[uint64](col, groupOrder, groups, fn, n, name)
+	case dtype.UInt32:
+		return applyGroupAggTyped[uint32](col, groupOrder, groups, fn, n, name)
+	case dtype.UInt16:
+		return applyGroupAggTyped[uint16](col, groupOrder, groups, fn, n, name)
+	case dtype.UInt8:
+		return applyGroupAggTyped[uint8](col, groupOrder, groups, fn, n, name)
+	default:
+		return nil, fmt.Errorf("golars: groupby: numeric aggregation not supported for %s", col.DataType())
+	}
+}
+
+// applyGroupAggTyped performs numeric group aggregation directly on the typed
+// array's backing slice, avoiding per-element type switches, interface
+// assertions, and intermediate slice allocations.
+func applyGroupAggTyped[T array.Numeric](col *series.Series, groupOrder []uint64, groups map[uint64][]int, fn AggFunc, n int, name string) (*series.Series, error) {
+	ta := col.Array().(*array.TypedArray[T])
+	vals := ta.Values()
+	validity := ta.Validity()
+	hasNulls := validity != nil
+
 	data := make([]float64, n)
 	valid := make([]bool, n)
 
 	for i, hash := range groupOrder {
 		indices := groups[hash]
-		vals := make([]float64, 0, len(indices))
-		for _, idx := range indices {
-			if col.IsValid(idx) {
-				var v float64
-				switch col.DataType() {
-				case dtype.Int64:
-					iv, _ := col.GetInt64(idx)
-					v = float64(iv)
-				case dtype.Float64:
-					v, _ = col.GetFloat64(idx)
-				default:
-					continue
-				}
-				vals = append(vals, v)
-			}
-		}
 
-		if len(vals) == 0 {
-			continue
-		}
-
-		valid[i] = true
 		switch fn {
 		case AggSum:
-			s := 0.0
-			for _, v := range vals {
-				s += v
+			sum := 0.0
+			count := 0
+			for _, idx := range indices {
+				if !hasNulls || validity.IsSet(idx) {
+					sum += float64(vals[idx])
+					count++
+				}
 			}
-			data[i] = s
+			if count > 0 {
+				data[i] = sum
+				valid[i] = true
+			}
 		case AggMean:
-			s := 0.0
-			for _, v := range vals {
-				s += v
+			sum := 0.0
+			count := 0
+			for _, idx := range indices {
+				if !hasNulls || validity.IsSet(idx) {
+					sum += float64(vals[idx])
+					count++
+				}
 			}
-			data[i] = s / float64(len(vals))
+			if count > 0 {
+				data[i] = sum / float64(count)
+				valid[i] = true
+			}
 		case AggMin:
-			m := vals[0]
-			for _, v := range vals[1:] {
-				if v < m {
-					m = v
+			first := true
+			min := 0.0
+			for _, idx := range indices {
+				if !hasNulls || validity.IsSet(idx) {
+					v := float64(vals[idx])
+					if first || v < min {
+						min = v
+						first = false
+					}
 				}
 			}
-			data[i] = m
+			if !first {
+				data[i] = min
+				valid[i] = true
+			}
 		case AggMax:
-			m := vals[0]
-			for _, v := range vals[1:] {
-				if v > m {
-					m = v
+			first := true
+			max := 0.0
+			for _, idx := range indices {
+				if !hasNulls || validity.IsSet(idx) {
+					v := float64(vals[idx])
+					if first || v > max {
+						max = v
+						first = false
+					}
 				}
 			}
-			data[i] = m
+			if !first {
+				data[i] = max
+				valid[i] = true
+			}
 		}
 	}
 
-	hasNulls := false
+	hasNullResult := false
 	for _, v := range valid {
 		if !v {
-			hasNulls = true
+			hasNullResult = true
 			break
 		}
 	}
-	if hasNulls {
+	if hasNullResult {
 		return series.NewFloat64WithValidity(name, data, valid), nil
 	}
 	return series.NewFloat64(name, data), nil

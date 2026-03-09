@@ -1,10 +1,41 @@
 package array
 
-import "sort"
+import (
+	"bytes"
+	"sort"
+)
 
 // ArgSort returns the indices that would sort the array. Null values are
 // placed at the end of the result regardless of sort direction.
+//
+// For numeric types, this dispatches to type-specific radix sort
+// implementations for better performance on large arrays.
 func ArgSort[T Ordered](a *TypedArray[T], descending bool) []int {
+	// Try to dispatch to radix sort for numeric types.
+	switch arr := any(a).(type) {
+	case *TypedArray[int64]:
+		return ArgSortInt64(arr, descending)
+	case *TypedArray[int32]:
+		return ArgSortInt32(arr, descending)
+	case *TypedArray[int16]:
+		return ArgSortInt16(arr, descending)
+	case *TypedArray[int8]:
+		return ArgSortInt8(arr, descending)
+	case *TypedArray[uint64]:
+		return ArgSortUint64(arr, descending)
+	case *TypedArray[uint32]:
+		return ArgSortUint32(arr, descending)
+	case *TypedArray[uint16]:
+		return ArgSortUint16(arr, descending)
+	case *TypedArray[uint8]:
+		return ArgSortUint8(arr, descending)
+	case *TypedArray[float64]:
+		return ArgSortFloat64(arr, descending)
+	case *TypedArray[float32]:
+		return ArgSortFloat32(arr, descending)
+	}
+
+	// Fallback: comparison-based sort for string and other types.
 	n := a.Len()
 	indices := make([]int, n)
 	for i := range indices {
@@ -61,11 +92,11 @@ func ArgSortString(a *StringArray, descending bool) []int {
 		if jNull {
 			return true
 		}
-		vi, vj := a.Value(ii), a.Value(jj)
+		cmp := bytes.Compare(a.ValueBytes(ii), a.ValueBytes(jj))
 		if descending {
-			return vi > vj
+			return cmp > 0
 		}
-		return vi < vj
+		return cmp < 0
 	})
 	return indices
 }

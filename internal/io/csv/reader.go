@@ -2,7 +2,7 @@
 package csv
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -116,12 +116,50 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 		o(&options)
 	}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
+	// Read entire input at once to avoid per-line Scanner overhead.
+	rawBytes, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("golars: csv: %w", err)
+	}
+
+	// Count lines for pre-allocation of column slices.
+	lineCount := bytes.Count(rawBytes, []byte{'\n'})
+	if len(rawBytes) > 0 && rawBytes[len(rawBytes)-1] != '\n' {
+		lineCount++
+	}
+
+	// Convert to string once; substring slicing shares backing memory.
+	content := string(rawBytes)
+	rawBytes = nil // allow GC of the byte slice
+
+	pos := 0
+
+	// nextLine extracts the next line from content starting at pos,
+	// advancing pos past the newline. Returns the line (without \r\n)
+	// and false if no more data.
+	nextLine := func() (string, bool) {
+		if pos >= len(content) {
+			return "", false
+		}
+		nlIdx := strings.IndexByte(content[pos:], '\n')
+		var line string
+		if nlIdx < 0 {
+			line = content[pos:]
+			pos = len(content)
+		} else {
+			line = content[pos : pos+nlIdx]
+			pos += nlIdx + 1
+		}
+		// Strip trailing \r
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		return line, true
+	}
 
 	// Skip initial rows
 	for i := 0; i < options.SkipRows; i++ {
-		if !scanner.Scan() {
+		if _, ok := nextLine(); !ok {
 			return nil, fmt.Errorf("golars: csv: not enough rows to skip")
 		}
 	}
@@ -129,15 +167,16 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 	// Read header
 	var colNames []string
 	if options.HasHeader {
-		if !scanner.Scan() {
+		headerLine, ok := nextLine()
+		if !ok {
 			return nil, fmt.Errorf("golars: csv: empty CSV")
 		}
-		colNames = parseLine(scanner.Text(), options.Separator, options.Quote)
+		colNames = parseLine(headerLine, options.Separator, options.Quote)
 	}
 
 	// Skip rows after header
 	for i := 0; i < options.SkipRowsAfterHdr; i++ {
-		if !scanner.Scan() {
+		if _, ok := nextLine(); !ok {
 			break
 		}
 	}
@@ -163,47 +202,63 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 		colNames = filteredNames
 	}
 
+	// Estimate data rows for pre-allocation.
+	estRows := lineCount - options.SkipRows - options.SkipRowsAfterHdr
+	if options.HasHeader {
+		estRows--
+	}
+	if estRows < 0 {
+		estRows = 0
+	}
+	if options.NRows > 0 && estRows > options.NRows {
+		estRows = options.NRows
+	}
+
 	// Read data rows directly into per-column string slices (single pass).
-	// This avoids building a [][]string of all rows and then transposing.
 	numCols := len(colNames) // may be 0 if no header
 	var colData [][]string
 	if numCols > 0 {
 		colData = make([][]string, numCols)
 		for i := range colData {
-			colData[i] = make([]string, 0, 1024)
+			colData[i] = make([]string, 0, estRows)
 		}
 	}
 
 	rowCount := 0
-	for scanner.Scan() {
-		if options.Ctx != nil {
+	for {
+		if options.NRows > 0 && rowCount >= options.NRows {
+			break
+		}
+		line, ok := nextLine()
+		if !ok {
+			break
+		}
+		if options.Ctx != nil && rowCount%10000 == 0 {
 			if err := options.Ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
-		if options.NRows > 0 && rowCount >= options.NRows {
-			break
-		}
-		line := scanner.Text()
 		if len(line) == 0 {
 			continue
 		}
 		if options.CommentChar != 0 {
-			r, _ := utf8.DecodeRuneInString(line)
-			if r == options.CommentChar {
+			ch, _ := utf8.DecodeRuneInString(line)
+			if ch == options.CommentChar {
 				continue
 			}
 		}
 		fields := parseLine(line, options.Separator, options.Quote)
 
 		if colIndices != nil {
-			filtered := make([]string, len(colIndices))
-			for i, idx := range colIndices {
+			for ci, idx := range colIndices {
 				if idx < len(fields) {
-					filtered[i] = fields[idx]
+					colData[ci] = append(colData[ci], fields[idx])
+				} else {
+					colData[ci] = append(colData[ci], "")
 				}
 			}
-			fields = filtered
+			rowCount++
+			continue
 		}
 
 		// On the first row without a header, determine numCols and allocate
@@ -211,7 +266,7 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 			numCols = len(fields)
 			colData = make([][]string, numCols)
 			for i := range colData {
-				colData[i] = make([]string, 0, 1024)
+				colData[i] = make([]string, 0, estRows)
 			}
 		}
 
@@ -224,10 +279,6 @@ func Read(r io.Reader, opts ...ReadOption) ([]*series.Series, error) {
 			}
 		}
 		rowCount++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("golars: csv: scan error: %w", err)
 	}
 
 	// Generate column names if no header
@@ -444,6 +495,10 @@ func inferType(values []string, nullSet map[string]struct{}, maxScan int) dtype.
 			if _, err := strconv.ParseFloat(v, 64); err != nil {
 				canFloat = false
 			}
+		}
+		// Early termination: if only String is possible, stop scanning.
+		if !canInt && !canFloat && !canBool {
+			return dtype.String
 		}
 	}
 

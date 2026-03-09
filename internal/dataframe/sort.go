@@ -39,6 +39,38 @@ func (df *DataFrame) SortBy(colNames []string, descending []bool) (*DataFrame, e
 		sortCols[i] = df.columns[idx]
 	}
 
+	// Fast path: single numeric column sort using radix sort.
+	if len(sortCols) == 1 {
+		col := sortCols[0]
+		desc := descending[0]
+		var indices []int
+		switch col.DataType() {
+		case dtype.Int8:
+			indices = array.ArgSortInt8(col.Array().(*array.TypedArray[int8]), desc)
+		case dtype.Int16:
+			indices = array.ArgSortInt16(col.Array().(*array.TypedArray[int16]), desc)
+		case dtype.Int32, dtype.Date:
+			indices = array.ArgSortInt32(col.Array().(*array.TypedArray[int32]), desc)
+		case dtype.Int64, dtype.DateTime, dtype.Time, dtype.Duration:
+			indices = array.ArgSortInt64(col.Array().(*array.TypedArray[int64]), desc)
+		case dtype.UInt8:
+			indices = array.ArgSortUint8(col.Array().(*array.TypedArray[uint8]), desc)
+		case dtype.UInt16:
+			indices = array.ArgSortUint16(col.Array().(*array.TypedArray[uint16]), desc)
+		case dtype.UInt32:
+			indices = array.ArgSortUint32(col.Array().(*array.TypedArray[uint32]), desc)
+		case dtype.UInt64:
+			indices = array.ArgSortUint64(col.Array().(*array.TypedArray[uint64]), desc)
+		case dtype.Float32:
+			indices = array.ArgSortFloat32(col.Array().(*array.TypedArray[float32]), desc)
+		case dtype.Float64:
+			indices = array.ArgSortFloat64(col.Array().(*array.TypedArray[float64]), desc)
+		}
+		if indices != nil {
+			return df.take(indices), nil
+		}
+	}
+
 	// Pre-build comparators for each sort column.
 	cmps := make([]func(i, j int) int, len(sortCols))
 	for k, col := range sortCols {
