@@ -45,6 +45,34 @@ func (c *comparisonExpr) ensureSelf() {
 
 func (c *comparisonExpr) Evaluate(ctx *Context) (*series.Series, error) {
 	c.ensureSelf()
+
+	// Fast path: detect scalar (literal) operands to avoid broadcasting.
+	if litR, ok := c.right.(*litExpr); ok {
+		left, err := c.left.Evaluate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, err := applyComparisonScalar(left, litR.value, c.op)
+		if err == nil {
+			return result, nil
+		}
+		// Fall through to generic path on type mismatch.
+	}
+
+	if litL, ok := c.left.(*litExpr); ok {
+		right, err := c.right.Evaluate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Flip the operation: (lit < col) == (col > lit)
+		flipped := flipCmpOp(c.op)
+		result, err := applyComparisonScalar(right, litL.value, flipped)
+		if err == nil {
+			return result, nil
+		}
+		// Fall through to generic path on type mismatch.
+	}
+
 	left, err := c.left.Evaluate(ctx)
 	if err != nil {
 		return nil, err
@@ -64,6 +92,115 @@ func (c *comparisonExpr) Alias(name string) Expr {
 func (c *comparisonExpr) String() string {
 	c.ensureSelf()
 	return fmt.Sprintf("(%s %s %s)", c.left.String(), cmpOpNames[c.op], c.right.String())
+}
+
+// flipCmpOp reverses a comparison operator for swapping operands.
+// (lit op col) becomes (col flipped col).
+func flipCmpOp(op cmpOp) cmpOp {
+	switch op {
+	case cmpLt:
+		return cmpGt
+	case cmpGt:
+		return cmpLt
+	case cmpLte:
+		return cmpGte
+	case cmpGte:
+		return cmpLte
+	default:
+		return op // Eq and Neq are symmetric
+	}
+}
+
+// applyComparisonScalar handles comparisons where one operand is a scalar value.
+// This avoids allocating a full broadcast array for the literal.
+func applyComparisonScalar(col *series.Series, scalar any, op cmpOp) (*series.Series, error) {
+	dt := col.DataType()
+
+	switch dt {
+	case dtype.Float64:
+		var sv float64
+		switch v := scalar.(type) {
+		case float64:
+			sv = v
+		case float32:
+			sv = float64(v)
+		case int:
+			sv = float64(v)
+		case int64:
+			sv = float64(v)
+		case int32:
+			sv = float64(v)
+		default:
+			return nil, fmt.Errorf("golars: cannot compare %s with %T", dt, scalar)
+		}
+		return compareFloat64Scalar(col, sv, op)
+
+	case dtype.Int64:
+		switch v := scalar.(type) {
+		case int:
+			return compareInt64Scalar(col, int64(v), op)
+		case int64:
+			return compareInt64Scalar(col, v, op)
+		case int32:
+			return compareInt64Scalar(col, int64(v), op)
+		case float64:
+			// Promote column to float64 for mixed comparison
+			promoted, err := promoteToFloat64(col)
+			if err != nil {
+				return nil, err
+			}
+			return compareFloat64Scalar(promoted, v, op)
+		default:
+			return nil, fmt.Errorf("golars: cannot compare %s with %T", dt, scalar)
+		}
+
+	default:
+		return nil, fmt.Errorf("golars: scalar comparison not supported for type %s", dt)
+	}
+}
+
+func compareFloat64Scalar(s *series.Series, scalar float64, op cmpOp) (*series.Series, error) {
+	a := s.Array().(*array.TypedArray[float64])
+	var result *array.BooleanArray
+	switch op {
+	case cmpEq:
+		result = array.EqualScalar(a, scalar)
+	case cmpNeq:
+		result = array.NotEqualScalar(a, scalar)
+	case cmpLt:
+		result = array.LessThanScalar(a, scalar)
+	case cmpGt:
+		result = array.GreaterThanScalar(a, scalar)
+	case cmpLte:
+		result = array.LessThanEqualScalar(a, scalar)
+	case cmpGte:
+		result = array.GreaterThanEqualScalar(a, scalar)
+	default:
+		return nil, fmt.Errorf("golars: unknown comparison op %d", op)
+	}
+	return series.New(s.Name(), result), nil
+}
+
+func compareInt64Scalar(s *series.Series, scalar int64, op cmpOp) (*series.Series, error) {
+	a := s.Array().(*array.TypedArray[int64])
+	var result *array.BooleanArray
+	switch op {
+	case cmpEq:
+		result = array.EqualScalar(a, scalar)
+	case cmpNeq:
+		result = array.NotEqualScalar(a, scalar)
+	case cmpLt:
+		result = array.LessThanScalar(a, scalar)
+	case cmpGt:
+		result = array.GreaterThanScalar(a, scalar)
+	case cmpLte:
+		result = array.LessThanEqualScalar(a, scalar)
+	case cmpGte:
+		result = array.GreaterThanEqualScalar(a, scalar)
+	default:
+		return nil, fmt.Errorf("golars: unknown comparison op %d", op)
+	}
+	return series.New(s.Name(), result), nil
 }
 
 func applyComparison(left, right *series.Series, op cmpOp) (*series.Series, error) {

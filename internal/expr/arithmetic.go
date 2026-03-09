@@ -51,6 +51,33 @@ func (b *binaryExpr) ensureSelf() {
 
 func (b *binaryExpr) Evaluate(ctx *Context) (*series.Series, error) {
 	b.ensureSelf()
+
+	// Fast path: scalar right operand (Col op Lit)
+	if litR, ok := b.right.(*litExpr); ok {
+		left, err := b.left.Evaluate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, err := applyArithmeticScalar(left, litR.value, b.op, false)
+		if err == nil {
+			return result, nil
+		}
+		// Fall through to generic path
+	}
+
+	// Fast path: scalar left operand (Lit op Col)
+	if litL, ok := b.left.(*litExpr); ok {
+		right, err := b.right.Evaluate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, err := applyArithmeticScalar(right, litL.value, b.op, true)
+		if err == nil {
+			return result, nil
+		}
+		// Fall through to generic path
+	}
+
 	left, err := b.left.Evaluate(ctx)
 	if err != nil {
 		return nil, err
@@ -70,6 +97,108 @@ func (b *binaryExpr) Alias(name string) Expr {
 func (b *binaryExpr) String() string {
 	b.ensureSelf()
 	return fmt.Sprintf("(%s %s %s)", b.left.String(), binaryOpNames[b.op], b.right.String())
+}
+
+// applyArithmeticScalar handles arithmetic where one operand is a scalar.
+// If reversed is true, the scalar is the left operand (scalar op col).
+func applyArithmeticScalar(col *series.Series, scalar any, op binaryOp, reversed bool) (*series.Series, error) {
+	dt := col.DataType()
+
+	switch dt {
+	case dtype.Float64:
+		var sv float64
+		switch v := scalar.(type) {
+		case float64:
+			sv = v
+		case float32:
+			sv = float64(v)
+		case int:
+			sv = float64(v)
+		case int64:
+			sv = float64(v)
+		case int32:
+			sv = float64(v)
+		default:
+			return nil, fmt.Errorf("golars: cannot apply arithmetic on %s with %T", dt, scalar)
+		}
+		return arithmeticFloat64Scalar(col, sv, op, reversed)
+
+	case dtype.Int64:
+		switch v := scalar.(type) {
+		case int:
+			return arithmeticInt64Scalar(col, int64(v), op, reversed)
+		case int64:
+			return arithmeticInt64Scalar(col, v, op, reversed)
+		case int32:
+			return arithmeticInt64Scalar(col, int64(v), op, reversed)
+		case float64:
+			promoted, err := promoteToFloat64(col)
+			if err != nil {
+				return nil, err
+			}
+			return arithmeticFloat64Scalar(promoted, v, op, reversed)
+		default:
+			return nil, fmt.Errorf("golars: cannot apply arithmetic on %s with %T", dt, scalar)
+		}
+
+	default:
+		return nil, fmt.Errorf("golars: scalar arithmetic not supported for type %s", dt)
+	}
+}
+
+func arithmeticFloat64Scalar(s *series.Series, scalar float64, op binaryOp, reversed bool) (*series.Series, error) {
+	a := s.Array().(*array.TypedArray[float64])
+	var result *array.TypedArray[float64]
+
+	switch op {
+	case opAdd:
+		result = array.AddScalar(a, scalar)
+	case opSub:
+		if reversed {
+			// scalar - col: negate then add
+			neg := array.Neg(a)
+			result = array.AddScalar(neg, scalar)
+		} else {
+			result = array.SubScalar(a, scalar)
+		}
+	case opMul:
+		result = array.MulScalar(a, scalar)
+	case opDiv:
+		if reversed {
+			return nil, fmt.Errorf("golars: scalar/col not supported in scalar fast path")
+		}
+		result = array.DivScalar(a, scalar)
+	default:
+		return nil, fmt.Errorf("golars: op %d not supported in scalar fast path", op)
+	}
+	return series.New(s.Name(), result), nil
+}
+
+func arithmeticInt64Scalar(s *series.Series, scalar int64, op binaryOp, reversed bool) (*series.Series, error) {
+	a := s.Array().(*array.TypedArray[int64])
+	var result *array.TypedArray[int64]
+
+	switch op {
+	case opAdd:
+		result = array.AddScalar(a, scalar)
+	case opSub:
+		if reversed {
+			neg := array.Neg(a)
+			result = array.AddScalar(neg, scalar)
+		} else {
+			result = array.SubScalar(a, scalar)
+		}
+	case opMul:
+		result = array.MulScalar(a, scalar)
+	case opDiv:
+		if reversed {
+			return nil, fmt.Errorf("golars: scalar/col not supported in scalar fast path")
+		}
+		result = array.DivScalar(a, scalar)
+	default:
+		return nil, fmt.Errorf("golars: op %d not supported in scalar fast path", op)
+	}
+	return series.New(s.Name(), result), nil
 }
 
 func applyArithmetic(left, right *series.Series, op binaryOp) (*series.Series, error) {

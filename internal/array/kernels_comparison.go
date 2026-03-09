@@ -19,11 +19,22 @@ func Equal[T comparable](a, b *TypedArray[T]) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av, bv := a.Values(), b.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] == bv[i] {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] == bv[i] {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
 	return NewBooleanArrayFromBitmap(data, mergeValidity(a.Validity(), b.Validity()))
@@ -35,11 +46,22 @@ func NotEqual[T comparable](a, b *TypedArray[T]) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av, bv := a.Values(), b.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] != bv[i] {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] != bv[i] {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
 	return NewBooleanArrayFromBitmap(data, mergeValidity(a.Validity(), b.Validity()))
@@ -51,11 +73,22 @@ func LessThan[T Ordered](a, b *TypedArray[T]) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av, bv := a.Values(), b.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] < bv[i] {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] < bv[i] {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
 	return NewBooleanArrayFromBitmap(data, mergeValidity(a.Validity(), b.Validity()))
@@ -67,11 +100,22 @@ func LessThanEqual[T Ordered](a, b *TypedArray[T]) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av, bv := a.Values(), b.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] <= bv[i] {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] <= bv[i] {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
 	return NewBooleanArrayFromBitmap(data, mergeValidity(a.Validity(), b.Validity()))
@@ -83,11 +127,22 @@ func GreaterThan[T Ordered](a, b *TypedArray[T]) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av, bv := a.Values(), b.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] > bv[i] {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] > bv[i] {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
 	return NewBooleanArrayFromBitmap(data, mergeValidity(a.Validity(), b.Validity()))
@@ -99,11 +154,22 @@ func GreaterThanEqual[T Ordered](a, b *TypedArray[T]) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av, bv := a.Values(), b.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] >= bv[i] {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] >= bv[i] {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
 	return NewBooleanArrayFromBitmap(data, mergeValidity(a.Validity(), b.Validity()))
@@ -115,13 +181,59 @@ func EqualScalar[T comparable](a *TypedArray[T], scalar T) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av := a.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] == scalar {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] == scalar {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
+
+	var validity *bitmap.Bitmap
+	if a.Validity() != nil {
+		validity = a.Validity().Clone()
+	}
+	return NewBooleanArrayFromBitmap(data, validity)
+}
+
+// NotEqualScalar returns a BooleanArray indicating where each element of a
+// does not equal the given scalar. Null values are preserved.
+func NotEqualScalar[T comparable](a *TypedArray[T], scalar T) *BooleanArray {
+	n := a.Len()
+	data := bitmap.NewEmpty(n)
+	av := a.Values()
+	words := data.Words()
+	nWords := len(words)
+
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
+			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] != scalar {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
+		}
+	})
+
 	var validity *bitmap.Bitmap
 	if a.Validity() != nil {
 		validity = a.Validity().Clone()
@@ -135,13 +247,59 @@ func LessThanScalar[T Ordered](a *TypedArray[T], scalar T) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av := a.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] < scalar {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] < scalar {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
+
+	var validity *bitmap.Bitmap
+	if a.Validity() != nil {
+		validity = a.Validity().Clone()
+	}
+	return NewBooleanArrayFromBitmap(data, validity)
+}
+
+// LessThanEqualScalar returns a BooleanArray indicating where each element of a
+// is less than or equal to the given scalar. Null values are preserved.
+func LessThanEqualScalar[T Ordered](a *TypedArray[T], scalar T) *BooleanArray {
+	n := a.Len()
+	data := bitmap.NewEmpty(n)
+	av := a.Values()
+	words := data.Words()
+	nWords := len(words)
+
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
+			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] <= scalar {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
+		}
+	})
+
 	var validity *bitmap.Bitmap
 	if a.Validity() != nil {
 		validity = a.Validity().Clone()
@@ -155,13 +313,59 @@ func GreaterThanScalar[T Ordered](a *TypedArray[T], scalar T) *BooleanArray {
 	n := a.Len()
 	data := bitmap.NewEmpty(n)
 	av := a.Values()
-	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
-		for i := start; i < end; i++ {
-			if av[i] > scalar {
-				data.Set(i)
+	words := data.Words()
+	nWords := len(words)
+
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
 			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] > scalar {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
 		}
 	})
+
+	var validity *bitmap.Bitmap
+	if a.Validity() != nil {
+		validity = a.Validity().Clone()
+	}
+	return NewBooleanArrayFromBitmap(data, validity)
+}
+
+// GreaterThanEqualScalar returns a BooleanArray indicating where each element
+// of a is greater than or equal to the given scalar. Null values are preserved.
+func GreaterThanEqualScalar[T Ordered](a *TypedArray[T], scalar T) *BooleanArray {
+	n := a.Len()
+	data := bitmap.NewEmpty(n)
+	av := a.Values()
+	words := data.Words()
+	nWords := len(words)
+
+	pool.ParallelDo(nWords, pool.DefaultThreshold/64, func(startW, endW int) {
+		for wi := startW; wi < endW; wi++ {
+			base := wi * 64
+			limit := base + 64
+			if limit > n {
+				limit = n
+			}
+			var w uint64
+			for i := base; i < limit; i++ {
+				if av[i] >= scalar {
+					w |= 1 << uint(i-base)
+				}
+			}
+			data.SetWord(wi, w)
+		}
+	})
+
 	var validity *bitmap.Bitmap
 	if a.Validity() != nil {
 		validity = a.Validity().Clone()

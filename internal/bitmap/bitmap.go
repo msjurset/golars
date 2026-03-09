@@ -89,6 +89,13 @@ func (b *Bitmap) Set(i int) {
 	b.data[word] |= 1 << bit
 }
 
+// SetWord writes a full 64-bit word at the given word index.
+// This is intended for bulk bitmap construction in hot kernels.
+// Callers must ensure wordIdx is within range.
+func (b *Bitmap) SetWord(wordIdx int, w uint64) {
+	b.data[wordIdx] = w
+}
+
 // Clear clears bit i, marking the value at position i as null.
 // Panics if i is out of range.
 func (b *Bitmap) Clear(i int) {

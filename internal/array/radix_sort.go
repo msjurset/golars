@@ -1,12 +1,54 @@
 package array
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"unsafe"
 
 	"github.com/msjurset/golars/internal/bitmap"
 )
+
+// isMostlySorted samples values and returns true if the data appears to be
+// nearly sorted (ascending or descending). Samples up to 256 evenly-spaced
+// elements and checks if >90% are in order.
+func isMostlySorted[T interface {
+	~int64 | ~float64 | ~int32 | ~float32 | ~uint64 | ~uint32
+}](vals []T, descending bool) bool {
+	n := len(vals)
+	if n < 256 {
+		inOrder := 0
+		for i := 1; i < n; i++ {
+			if descending {
+				if vals[i] <= vals[i-1] {
+					inOrder++
+				}
+			} else {
+				if vals[i] >= vals[i-1] {
+					inOrder++
+				}
+			}
+		}
+		return inOrder >= (n-1)*9/10
+	}
+
+	step := n / 256
+	inOrder := 0
+	total := 0
+	for i := step; i < n; i += step {
+		total++
+		if descending {
+			if vals[i] <= vals[i-step] {
+				inOrder++
+			}
+		} else {
+			if vals[i] >= vals[i-step] {
+				inOrder++
+			}
+		}
+	}
+	return inOrder >= total*9/10
+}
 
 // radixSortThreshold is the minimum number of elements for radix sort to be
 // worthwhile. Below this threshold we fall back to comparison-based sort.
@@ -251,6 +293,7 @@ func float32ToSortableUint32(v float32) uint32 {
 }
 
 // ArgSortInt64 sorts a TypedArray[int64] using radix sort when beneficial.
+// Falls back to comparison sort for nearly-sorted data or small arrays.
 func ArgSortInt64(a *TypedArray[int64], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -268,16 +311,29 @@ func ArgSortInt64(a *TypedArray[int64], descending bool) []int {
 	}
 
 	vals := a.Values()
+	validIndices := indices[:validCount]
+
+	if isMostlySorted(vals, descending) {
+		slices.SortStableFunc(validIndices, func(i, j int) int {
+			if descending {
+				return cmp.Compare(vals[j], vals[i])
+			}
+			return cmp.Compare(vals[i], vals[j])
+		})
+		return indices
+	}
+
 	keys := make([]uint64, n)
-	for _, idx := range indices[:validCount] {
+	for _, idx := range validIndices {
 		keys[idx] = int64ToSortableUint64(vals[idx])
 	}
 
-	radixArgSort64(keys, indices[:validCount], descending)
+	radixArgSort64(keys, validIndices, descending)
 	return indices
 }
 
 // ArgSortInt32 sorts a TypedArray[int32] using radix sort when beneficial.
+// Falls back to comparison sort for nearly-sorted data or small arrays.
 func ArgSortInt32(a *TypedArray[int32], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -295,16 +351,29 @@ func ArgSortInt32(a *TypedArray[int32], descending bool) []int {
 	}
 
 	vals := a.Values()
+	validIndices := indices[:validCount]
+
+	if isMostlySorted(vals, descending) {
+		slices.SortStableFunc(validIndices, func(i, j int) int {
+			if descending {
+				return cmp.Compare(vals[j], vals[i])
+			}
+			return cmp.Compare(vals[i], vals[j])
+		})
+		return indices
+	}
+
 	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
+	for _, idx := range validIndices {
 		keys[idx] = int32ToSortableUint32(vals[idx])
 	}
 
-	radixArgSort32(keys, indices[:validCount], descending)
+	radixArgSort32(keys, validIndices, descending)
 	return indices
 }
 
-// ArgSortInt16 sorts a TypedArray[int16] using radix sort when beneficial.
+// ArgSortInt16 sorts a TypedArray[int16] using comparison sort.
+// Small-range types don't benefit from radix sort.
 func ArgSortInt16(a *TypedArray[int16], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -322,16 +391,18 @@ func ArgSortInt16(a *TypedArray[int16], descending bool) []int {
 	}
 
 	vals := a.Values()
-	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
-		keys[idx] = int16ToSortableUint32(vals[idx])
-	}
-
-	radixArgSort32(keys, indices[:validCount], descending)
+	validIndices := indices[:validCount]
+	slices.SortStableFunc(validIndices, func(i, j int) int {
+		if descending {
+			return cmp.Compare(vals[j], vals[i])
+		}
+		return cmp.Compare(vals[i], vals[j])
+	})
 	return indices
 }
 
-// ArgSortInt8 sorts a TypedArray[int8] using radix sort when beneficial.
+// ArgSortInt8 sorts a TypedArray[int8] using comparison sort.
+// Small-range types don't benefit from radix sort.
 func ArgSortInt8(a *TypedArray[int8], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -349,16 +420,18 @@ func ArgSortInt8(a *TypedArray[int8], descending bool) []int {
 	}
 
 	vals := a.Values()
-	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
-		keys[idx] = int8ToSortableUint32(vals[idx])
-	}
-
-	radixArgSort32(keys, indices[:validCount], descending)
+	validIndices := indices[:validCount]
+	slices.SortStableFunc(validIndices, func(i, j int) int {
+		if descending {
+			return cmp.Compare(vals[j], vals[i])
+		}
+		return cmp.Compare(vals[i], vals[j])
+	})
 	return indices
 }
 
 // ArgSortUint64 sorts a TypedArray[uint64] using radix sort when beneficial.
+// Falls back to comparison sort for nearly-sorted data or small arrays.
 func ArgSortUint64(a *TypedArray[uint64], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -376,16 +449,29 @@ func ArgSortUint64(a *TypedArray[uint64], descending bool) []int {
 	}
 
 	vals := a.Values()
+	validIndices := indices[:validCount]
+
+	if isMostlySorted(vals, descending) {
+		slices.SortStableFunc(validIndices, func(i, j int) int {
+			if descending {
+				return cmp.Compare(vals[j], vals[i])
+			}
+			return cmp.Compare(vals[i], vals[j])
+		})
+		return indices
+	}
+
 	keys := make([]uint64, n)
-	for _, idx := range indices[:validCount] {
+	for _, idx := range validIndices {
 		keys[idx] = vals[idx]
 	}
 
-	radixArgSort64(keys, indices[:validCount], descending)
+	radixArgSort64(keys, validIndices, descending)
 	return indices
 }
 
 // ArgSortUint32 sorts a TypedArray[uint32] using radix sort when beneficial.
+// Falls back to comparison sort for nearly-sorted data or small arrays.
 func ArgSortUint32(a *TypedArray[uint32], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -403,16 +489,29 @@ func ArgSortUint32(a *TypedArray[uint32], descending bool) []int {
 	}
 
 	vals := a.Values()
+	validIndices := indices[:validCount]
+
+	if isMostlySorted(vals, descending) {
+		slices.SortStableFunc(validIndices, func(i, j int) int {
+			if descending {
+				return cmp.Compare(vals[j], vals[i])
+			}
+			return cmp.Compare(vals[i], vals[j])
+		})
+		return indices
+	}
+
 	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
+	for _, idx := range validIndices {
 		keys[idx] = vals[idx]
 	}
 
-	radixArgSort32(keys, indices[:validCount], descending)
+	radixArgSort32(keys, validIndices, descending)
 	return indices
 }
 
-// ArgSortUint16 sorts a TypedArray[uint16] using radix sort when beneficial.
+// ArgSortUint16 sorts a TypedArray[uint16] using comparison sort.
+// Small-range types don't benefit from radix sort.
 func ArgSortUint16(a *TypedArray[uint16], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -430,16 +529,18 @@ func ArgSortUint16(a *TypedArray[uint16], descending bool) []int {
 	}
 
 	vals := a.Values()
-	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
-		keys[idx] = uint32(vals[idx])
-	}
-
-	radixArgSort32(keys, indices[:validCount], descending)
+	validIndices := indices[:validCount]
+	slices.SortStableFunc(validIndices, func(i, j int) int {
+		if descending {
+			return cmp.Compare(vals[j], vals[i])
+		}
+		return cmp.Compare(vals[i], vals[j])
+	})
 	return indices
 }
 
-// ArgSortUint8 sorts a TypedArray[uint8] using radix sort when beneficial.
+// ArgSortUint8 sorts a TypedArray[uint8] using comparison sort.
+// Small-range types don't benefit from radix sort.
 func ArgSortUint8(a *TypedArray[uint8], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -457,16 +558,18 @@ func ArgSortUint8(a *TypedArray[uint8], descending bool) []int {
 	}
 
 	vals := a.Values()
-	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
-		keys[idx] = uint32(vals[idx])
-	}
-
-	radixArgSort32(keys, indices[:validCount], descending)
+	validIndices := indices[:validCount]
+	slices.SortStableFunc(validIndices, func(i, j int) int {
+		if descending {
+			return cmp.Compare(vals[j], vals[i])
+		}
+		return cmp.Compare(vals[i], vals[j])
+	})
 	return indices
 }
 
 // ArgSortFloat64 sorts a TypedArray[float64] using radix sort when beneficial.
+// Falls back to comparison sort for nearly-sorted data or small arrays.
 func ArgSortFloat64(a *TypedArray[float64], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -484,16 +587,29 @@ func ArgSortFloat64(a *TypedArray[float64], descending bool) []int {
 	}
 
 	vals := a.Values()
+	validIndices := indices[:validCount]
+
+	if isMostlySorted(vals, descending) {
+		slices.SortStableFunc(validIndices, func(i, j int) int {
+			if descending {
+				return cmp.Compare(vals[j], vals[i])
+			}
+			return cmp.Compare(vals[i], vals[j])
+		})
+		return indices
+	}
+
 	keys := make([]uint64, n)
-	for _, idx := range indices[:validCount] {
+	for _, idx := range validIndices {
 		keys[idx] = float64ToSortableUint64(vals[idx])
 	}
 
-	radixArgSort64(keys, indices[:validCount], descending)
+	radixArgSort64(keys, validIndices, descending)
 	return indices
 }
 
 // ArgSortFloat32 sorts a TypedArray[float32] using radix sort when beneficial.
+// Falls back to comparison sort for nearly-sorted data or small arrays.
 func ArgSortFloat32(a *TypedArray[float32], descending bool) []int {
 	n := a.Len()
 	indices := make([]int, n)
@@ -511,11 +627,23 @@ func ArgSortFloat32(a *TypedArray[float32], descending bool) []int {
 	}
 
 	vals := a.Values()
+	validIndices := indices[:validCount]
+
+	if isMostlySorted(vals, descending) {
+		slices.SortStableFunc(validIndices, func(i, j int) int {
+			if descending {
+				return cmp.Compare(vals[j], vals[i])
+			}
+			return cmp.Compare(vals[i], vals[j])
+		})
+		return indices
+	}
+
 	keys := make([]uint32, n)
-	for _, idx := range indices[:validCount] {
+	for _, idx := range validIndices {
 		keys[idx] = float32ToSortableUint32(vals[idx])
 	}
 
-	radixArgSort32(keys, indices[:validCount], descending)
+	radixArgSort32(keys, validIndices, descending)
 	return indices
 }

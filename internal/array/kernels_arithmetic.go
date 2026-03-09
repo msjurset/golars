@@ -180,3 +180,39 @@ func MulScalar[T Numeric](a *TypedArray[T], scalar T) *TypedArray[T] {
 	}
 	return NewTypedArray(result, a.DataType(), validity)
 }
+
+// SubScalar returns a new array whose elements are each element of a minus
+// the given scalar value. Null values are preserved.
+func SubScalar[T Numeric](a *TypedArray[T], scalar T) *TypedArray[T] {
+	n := a.Len()
+	result := make([]T, n)
+	av := a.Values()
+	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
+		for i := start; i < end; i++ {
+			result[i] = av[i] - scalar
+		}
+	})
+	var validity *bitmap.Bitmap
+	if a.Validity() != nil {
+		validity = a.Validity().Clone()
+	}
+	return NewTypedArray(result, a.DataType(), validity)
+}
+
+// DivScalar returns a new array whose elements are each element of a divided by
+// the given scalar value. Null values are preserved.
+func DivScalar[T Numeric](a *TypedArray[T], scalar T) *TypedArray[T] {
+	n := a.Len()
+	result := make([]T, n)
+	av := a.Values()
+	pool.ParallelDo(n, pool.DefaultThreshold, func(start, end int) {
+		for i := start; i < end; i++ {
+			result[i] = av[i] / scalar
+		}
+	})
+	var validity *bitmap.Bitmap
+	if a.Validity() != nil {
+		validity = a.Validity().Clone()
+	}
+	return NewTypedArray(result, a.DataType(), validity)
+}
