@@ -1,6 +1,8 @@
 package array
 
 import (
+	"math/bits"
+
 	"github.com/msjurset/golars/internal/bitmap"
 )
 
@@ -12,19 +14,34 @@ func FilterTyped[T any](arr *TypedArray[T], mask *bitmap.Bitmap) *TypedArray[T] 
 	data := make([]T, 0, n)
 	var validity *bitmap.Bitmap
 	hasNulls := arr.Validity() != nil
+	srcValidity := arr.Validity()
 
 	if hasNulls {
 		validity = bitmap.New(n)
 	}
 
+	values := arr.Values()
+	words := mask.Words()
+	arrLen := arr.Len()
 	j := 0
-	for i := 0; i < arr.Len(); i++ {
-		if mask.IsSet(i) {
-			data = append(data, arr.Value(i))
-			if hasNulls && arr.IsNull(i) {
+
+	for wi, w := range words {
+		if w == 0 {
+			continue
+		}
+		base := wi * 64
+		for w != 0 {
+			tz := bits.TrailingZeros64(w)
+			i := base + tz
+			if i >= arrLen {
+				break
+			}
+			data = append(data, values[i])
+			if hasNulls && !srcValidity.IsSet(i) {
 				validity.Clear(j)
 			}
 			j++
+			w &= w - 1 // clear lowest set bit
 		}
 	}
 
@@ -61,21 +78,36 @@ func FilterBoolean(arr *BooleanArray, mask *bitmap.Bitmap) *BooleanArray {
 	data := bitmap.NewEmpty(n)
 	var validity *bitmap.Bitmap
 	hasNulls := arr.Validity() != nil
+	srcValidity := arr.Validity()
+	srcData := arr.DataBitmap()
 
 	if hasNulls {
 		validity = bitmap.New(n)
 	}
 
+	words := mask.Words()
+	arrLen := arr.Len()
 	j := 0
-	for i := 0; i < arr.Len(); i++ {
-		if mask.IsSet(i) {
-			if arr.Value(i) {
+
+	for wi, w := range words {
+		if w == 0 {
+			continue
+		}
+		base := wi * 64
+		for w != 0 {
+			tz := bits.TrailingZeros64(w)
+			i := base + tz
+			if i >= arrLen {
+				break
+			}
+			if srcData.IsSet(i) {
 				data.Set(j)
 			}
-			if hasNulls && arr.IsNull(i) {
+			if hasNulls && !srcValidity.IsSet(i) {
 				validity.Clear(j)
 			}
 			j++
+			w &= w - 1
 		}
 	}
 
@@ -90,19 +122,33 @@ func FilterString(arr *StringArray, mask *bitmap.Bitmap) *StringArray {
 	values := make([]string, 0, n)
 	var validity *bitmap.Bitmap
 	hasNulls := arr.Validity() != nil
+	srcValidity := arr.Validity()
 
 	if hasNulls {
 		validity = bitmap.New(n)
 	}
 
+	words := mask.Words()
+	arrLen := arr.Len()
 	j := 0
-	for i := 0; i < arr.Len(); i++ {
-		if mask.IsSet(i) {
+
+	for wi, w := range words {
+		if w == 0 {
+			continue
+		}
+		base := wi * 64
+		for w != 0 {
+			tz := bits.TrailingZeros64(w)
+			i := base + tz
+			if i >= arrLen {
+				break
+			}
 			values = append(values, arr.Value(i))
-			if hasNulls && arr.IsNull(i) {
+			if hasNulls && !srcValidity.IsSet(i) {
 				validity.Clear(j)
 			}
 			j++
+			w &= w - 1
 		}
 	}
 

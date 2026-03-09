@@ -2,6 +2,8 @@ package dataframe
 
 import (
 	"fmt"
+	"math"
+	"unsafe"
 
 	"github.com/msjurset/golars/internal/array"
 	"github.com/msjurset/golars/internal/bitmap"
@@ -9,13 +11,276 @@ import (
 	"github.com/msjurset/golars/internal/series"
 )
 
+// FNV-1a constants for 64-bit hashing.
+const (
+	fnvOffset64 = uint64(14695981039346656037)
+	fnvPrime64  = uint64(1099511628211)
+)
+
+// hashCombine mixes an additional uint64 value into the running hash.
+func hashCombine(hash, value uint64) uint64 {
+	// Mix bytes of value into hash using FNV-1a byte-at-a-time
+	b := (*[8]byte)(unsafe.Pointer(&value))
+	hash ^= uint64(b[0])
+	hash *= fnvPrime64
+	hash ^= uint64(b[1])
+	hash *= fnvPrime64
+	hash ^= uint64(b[2])
+	hash *= fnvPrime64
+	hash ^= uint64(b[3])
+	hash *= fnvPrime64
+	hash ^= uint64(b[4])
+	hash *= fnvPrime64
+	hash ^= uint64(b[5])
+	hash *= fnvPrime64
+	hash ^= uint64(b[6])
+	hash *= fnvPrime64
+	hash ^= uint64(b[7])
+	hash *= fnvPrime64
+	return hash
+}
+
+// hashString hashes a string into the running hash using FNV-1a.
+func hashString(hash uint64, s string) uint64 {
+	for i := 0; i < len(s); i++ {
+		hash ^= uint64(s[i])
+		hash *= fnvPrime64
+	}
+	return hash
+}
+
+// colHasher provides type-specific hashing for a single column. It avoids
+// interface boxing by caching the underlying typed array pointer.
+type colHasher struct {
+	series   *series.Series
+	dt       dtype.DataType
+	int64s   *array.TypedArray[int64]
+	float64s *array.TypedArray[float64]
+	int32s   *array.TypedArray[int32]
+	strings  *array.StringArray
+	booleans *array.BooleanArray
+	uint64s  *array.TypedArray[uint64]
+	uint32s  *array.TypedArray[uint32]
+	int16s   *array.TypedArray[int16]
+	int8s    *array.TypedArray[int8]
+	uint16s  *array.TypedArray[uint16]
+	uint8s   *array.TypedArray[uint8]
+	float32s *array.TypedArray[float32]
+}
+
+func newColHasher(s *series.Series) colHasher {
+	ch := colHasher{series: s, dt: s.DataType()}
+	arr := s.Array()
+	switch ch.dt {
+	case dtype.Int64, dtype.DateTime, dtype.Time, dtype.Duration:
+		ch.int64s, _ = arr.(*array.TypedArray[int64])
+	case dtype.Float64:
+		ch.float64s, _ = arr.(*array.TypedArray[float64])
+	case dtype.Int32, dtype.Date:
+		ch.int32s, _ = arr.(*array.TypedArray[int32])
+	case dtype.String:
+		ch.strings, _ = arr.(*array.StringArray)
+	case dtype.Boolean:
+		ch.booleans, _ = arr.(*array.BooleanArray)
+	case dtype.UInt64:
+		ch.uint64s, _ = arr.(*array.TypedArray[uint64])
+	case dtype.UInt32:
+		ch.uint32s, _ = arr.(*array.TypedArray[uint32])
+	case dtype.Int16:
+		ch.int16s, _ = arr.(*array.TypedArray[int16])
+	case dtype.Int8:
+		ch.int8s, _ = arr.(*array.TypedArray[int8])
+	case dtype.UInt16:
+		ch.uint16s, _ = arr.(*array.TypedArray[uint16])
+	case dtype.UInt8:
+		ch.uint8s, _ = arr.(*array.TypedArray[uint8])
+	case dtype.Float32:
+		ch.float32s, _ = arr.(*array.TypedArray[float32])
+	}
+	return ch
+}
+
+// hashValue hashes the value at index i into the running hash.
+// Null values are hashed as a sentinel byte 0x00; non-null values start with 0x01.
+func (ch *colHasher) hashValue(hash uint64, i int) uint64 {
+	if ch.series.IsNull(i) {
+		hash ^= 0
+		hash *= fnvPrime64
+		return hash
+	}
+	// Non-null sentinel
+	hash ^= 1
+	hash *= fnvPrime64
+
+	switch ch.dt {
+	case dtype.Int64, dtype.DateTime, dtype.Time, dtype.Duration:
+		if ch.int64s != nil {
+			return hashCombine(hash, uint64(ch.int64s.Value(i)))
+		}
+	case dtype.Float64:
+		if ch.float64s != nil {
+			v := ch.float64s.Value(i)
+			return hashCombine(hash, math.Float64bits(v))
+		}
+	case dtype.Int32, dtype.Date:
+		if ch.int32s != nil {
+			return hashCombine(hash, uint64(ch.int32s.Value(i)))
+		}
+	case dtype.String:
+		if ch.strings != nil {
+			return hashString(hash, ch.strings.Value(i))
+		}
+	case dtype.Boolean:
+		if ch.booleans != nil {
+			if ch.booleans.Value(i) {
+				hash ^= 1
+			} else {
+				hash ^= 2
+			}
+			hash *= fnvPrime64
+			return hash
+		}
+	case dtype.UInt64:
+		if ch.uint64s != nil {
+			return hashCombine(hash, ch.uint64s.Value(i))
+		}
+	case dtype.UInt32:
+		if ch.uint32s != nil {
+			return hashCombine(hash, uint64(ch.uint32s.Value(i)))
+		}
+	case dtype.Int16:
+		if ch.int16s != nil {
+			return hashCombine(hash, uint64(ch.int16s.Value(i)))
+		}
+	case dtype.Int8:
+		if ch.int8s != nil {
+			return hashCombine(hash, uint64(ch.int8s.Value(i)))
+		}
+	case dtype.UInt16:
+		if ch.uint16s != nil {
+			return hashCombine(hash, uint64(ch.uint16s.Value(i)))
+		}
+	case dtype.UInt8:
+		if ch.uint8s != nil {
+			return hashCombine(hash, uint64(ch.uint8s.Value(i)))
+		}
+	case dtype.Float32:
+		if ch.float32s != nil {
+			return hashCombine(hash, uint64(math.Float32bits(ch.float32s.Value(i))))
+		}
+	}
+	return hash
+}
+
+// rowsEqual returns true if two rows have equal values across all key columns.
+func rowsEqual(hashers []colHasher, i, j int) bool {
+	for _, ch := range hashers {
+		ni := ch.series.IsNull(i)
+		nj := ch.series.IsNull(j)
+		if ni != nj {
+			return false
+		}
+		if ni {
+			continue
+		}
+		switch ch.dt {
+		case dtype.Int64, dtype.DateTime, dtype.Time, dtype.Duration:
+			if ch.int64s != nil {
+				if ch.int64s.Value(i) != ch.int64s.Value(j) {
+					return false
+				}
+			}
+		case dtype.Float64:
+			if ch.float64s != nil {
+				if ch.float64s.Value(i) != ch.float64s.Value(j) {
+					return false
+				}
+			}
+		case dtype.Int32, dtype.Date:
+			if ch.int32s != nil {
+				if ch.int32s.Value(i) != ch.int32s.Value(j) {
+					return false
+				}
+			}
+		case dtype.String:
+			if ch.strings != nil {
+				if ch.strings.Value(i) != ch.strings.Value(j) {
+					return false
+				}
+			}
+		case dtype.Boolean:
+			if ch.booleans != nil {
+				if ch.booleans.Value(i) != ch.booleans.Value(j) {
+					return false
+				}
+			}
+		case dtype.UInt64:
+			if ch.uint64s != nil {
+				if ch.uint64s.Value(i) != ch.uint64s.Value(j) {
+					return false
+				}
+			}
+		case dtype.UInt32:
+			if ch.uint32s != nil {
+				if ch.uint32s.Value(i) != ch.uint32s.Value(j) {
+					return false
+				}
+			}
+		case dtype.Int16:
+			if ch.int16s != nil {
+				if ch.int16s.Value(i) != ch.int16s.Value(j) {
+					return false
+				}
+			}
+		case dtype.Int8:
+			if ch.int8s != nil {
+				if ch.int8s.Value(i) != ch.int8s.Value(j) {
+					return false
+				}
+			}
+		case dtype.UInt16:
+			if ch.uint16s != nil {
+				if ch.uint16s.Value(i) != ch.uint16s.Value(j) {
+					return false
+				}
+			}
+		case dtype.UInt8:
+			if ch.uint8s != nil {
+				if ch.uint8s.Value(i) != ch.uint8s.Value(j) {
+					return false
+				}
+			}
+		case dtype.Float32:
+			if ch.float32s != nil {
+				if ch.float32s.Value(i) != ch.float32s.Value(j) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// hashRowFast computes an FNV-1a hash for a row across multiple columns.
+func hashRowFast(hashers []colHasher, i int) uint64 {
+	h := fnvOffset64
+	for k := range hashers {
+		h = hashers[k].hashValue(h, i)
+	}
+	return h
+}
+
 // GroupByResult holds the result of a GroupBy operation, which can then be
 // aggregated with Agg.
 type GroupByResult struct {
-	df       *DataFrame
-	keys     []string
-	groups   map[string][]int // hash -> row indices
-	groupKeys [][]any         // ordered group key values
+	df        *DataFrame
+	keys      []string
+	groups    map[uint64][]int // hash -> row indices
+	groupKeys [][]any          // ordered group key values
+	// groupOrder preserves insertion order of groups; each entry is a hash key.
+	groupOrder []uint64
+	// keyHashers are cached for collision checks during aggregation.
+	keyHashers []colHasher
 }
 
 // GroupBy groups the DataFrame by the given column names.
@@ -27,39 +292,74 @@ func (df *DataFrame) GroupBy(keys ...string) (*GroupByResult, error) {
 	}
 
 	keyCols := make([]*series.Series, len(keys))
+	hashers := make([]colHasher, len(keys))
 	for i, k := range keys {
 		c, _ := df.Column(k)
 		keyCols[i] = c
+		hashers[i] = newColHasher(c)
 	}
 
-	groups := make(map[string][]int)
-	var orderedKeys []string
+	// Pre-allocate with reasonable capacity
+	estGroups := df.height / 4
+	if estGroups < 16 {
+		estGroups = 16
+	}
+	groups := make(map[uint64][]int, estGroups)
+	groupOrder := make([]uint64, 0, estGroups)
 	var groupKeyValues [][]any
 
 	for i := 0; i < df.height; i++ {
-		hash := hashRow(keyCols, i)
-		if _, exists := groups[hash]; !exists {
-			orderedKeys = append(orderedKeys, hash)
-			vals := make([]any, len(keys))
-			for j, col := range keyCols {
-				vals[j] = getAny(col, i)
-			}
-			groupKeyValues = append(groupKeyValues, vals)
-		}
-		groups[hash] = append(groups[hash], i)
-	}
+		h := hashRowFast(hashers, i)
 
-	// Reorder groups map to preserve insertion order
-	orderedGroups := make(map[string][]int, len(groups))
-	for _, k := range orderedKeys {
-		orderedGroups[k] = groups[k]
+		bucket, exists := groups[h]
+		if exists {
+			// Check for hash collision: does this row actually match the group?
+			// Compare against the first row in the bucket.
+			if rowsEqual(hashers, i, bucket[0]) {
+				groups[h] = append(bucket, i)
+				continue
+			}
+			// Hash collision with different values. Use a secondary probe:
+			// linear probe on hash space until we find a matching bucket or empty slot.
+			for probe := uint64(1); ; probe++ {
+				ph := h + probe
+				pb, pExists := groups[ph]
+				if !pExists {
+					// New group at probed slot
+					groupOrder = append(groupOrder, ph)
+					vals := make([]any, len(keys))
+					for j, col := range keyCols {
+						vals[j] = getAny(col, i)
+					}
+					groupKeyValues = append(groupKeyValues, vals)
+					groups[ph] = append(make([]int, 0, 4), i)
+					break
+				}
+				if rowsEqual(hashers, i, pb[0]) {
+					groups[ph] = append(pb, i)
+					break
+				}
+			}
+			continue
+		}
+
+		// New group
+		groupOrder = append(groupOrder, h)
+		vals := make([]any, len(keys))
+		for j, col := range keyCols {
+			vals[j] = getAny(col, i)
+		}
+		groupKeyValues = append(groupKeyValues, vals)
+		groups[h] = append(make([]int, 0, 4), i)
 	}
 
 	return &GroupByResult{
-		df:        df,
-		keys:      keys,
-		groups:    orderedGroups,
-		groupKeys: groupKeyValues,
+		df:         df,
+		keys:       keys,
+		groups:     groups,
+		groupKeys:  groupKeyValues,
+		groupOrder: groupOrder,
+		keyHashers: hashers,
 	}, nil
 }
 
@@ -82,7 +382,7 @@ func (g *GroupByResult) Agg(aggs map[string]AggFunc) (*DataFrame, error) {
 		if err != nil {
 			return nil, fmt.Errorf("golars: groupby agg: column %q not found", colName)
 		}
-		resultCol, err := applyGroupAgg(srcCol, g.groupKeys, g.groups, aggFn, nGroups)
+		resultCol, err := applyGroupAgg(srcCol, g.groupOrder, g.groups, aggFn, nGroups)
 		if err != nil {
 			return nil, err
 		}
@@ -109,20 +409,6 @@ const (
 	AggFirst
 	AggLast
 )
-
-func hashRow(cols []*series.Series, i int) string {
-	if len(cols) == 1 {
-		return fmt.Sprintf("%v", getAny(cols[0], i))
-	}
-	key := ""
-	for j, col := range cols {
-		if j > 0 {
-			key += "\x00"
-		}
-		key += fmt.Sprintf("%v", getAny(col, i))
-	}
-	return key
-}
 
 func getAny(s *series.Series, i int) any {
 	if s.IsNull(i) {
@@ -197,30 +483,13 @@ func buildGroupKeyColumn(name string, dt dtype.DataType, groupKeys [][]any, keyI
 	}
 }
 
-func applyGroupAgg(col *series.Series, groupKeys [][]any, groups map[string][]int, fn AggFunc, nGroups int) (*series.Series, error) {
+func applyGroupAgg(col *series.Series, groupOrder []uint64, groups map[uint64][]int, fn AggFunc, nGroups int) (*series.Series, error) {
 	name := col.Name()
-
-	// Get ordered group keys to match groupKeys order
-	orderedHashes := make([]string, nGroups)
-	for i, gk := range groupKeys {
-		if len(gk) == 1 {
-			orderedHashes[i] = fmt.Sprintf("%v", gk[0])
-		} else {
-			h := ""
-			for j, v := range gk {
-				if j > 0 {
-					h += "\x00"
-				}
-				h += fmt.Sprintf("%v", v)
-			}
-			orderedHashes[i] = h
-		}
-	}
 
 	switch fn {
 	case AggCount:
 		data := make([]int64, nGroups)
-		for i, hash := range orderedHashes {
+		for i, hash := range groupOrder {
 			indices := groups[hash]
 			count := int64(0)
 			for _, idx := range indices {
@@ -233,24 +502,24 @@ func applyGroupAgg(col *series.Series, groupKeys [][]any, groups map[string][]in
 		return series.NewInt64(name, data), nil
 
 	case AggSum, AggMean, AggMin, AggMax:
-		return applyNumericGroupAgg(col, orderedHashes, groups, fn, nGroups, name)
+		return applyNumericGroupAgg(col, groupOrder, groups, fn, nGroups, name)
 
 	case AggFirst:
-		return applyFirstLast(col, orderedHashes, groups, nGroups, name, true)
+		return applyFirstLast(col, groupOrder, groups, nGroups, name, true)
 
 	case AggLast:
-		return applyFirstLast(col, orderedHashes, groups, nGroups, name, false)
+		return applyFirstLast(col, groupOrder, groups, nGroups, name, false)
 
 	default:
 		return nil, fmt.Errorf("golars: groupby: unknown aggregation function")
 	}
 }
 
-func applyNumericGroupAgg(col *series.Series, hashes []string, groups map[string][]int, fn AggFunc, n int, name string) (*series.Series, error) {
+func applyNumericGroupAgg(col *series.Series, groupOrder []uint64, groups map[uint64][]int, fn AggFunc, n int, name string) (*series.Series, error) {
 	data := make([]float64, n)
 	valid := make([]bool, n)
 
-	for i, hash := range hashes {
+	for i, hash := range groupOrder {
 		indices := groups[hash]
 		vals := make([]float64, 0, len(indices))
 		for _, idx := range indices {
@@ -319,12 +588,12 @@ func applyNumericGroupAgg(col *series.Series, hashes []string, groups map[string
 	return series.NewFloat64(name, data), nil
 }
 
-func applyFirstLast(col *series.Series, hashes []string, groups map[string][]int, n int, name string, first bool) (*series.Series, error) {
+func applyFirstLast(col *series.Series, groupOrder []uint64, groups map[uint64][]int, n int, name string, first bool) (*series.Series, error) {
 	switch col.DataType() {
 	case dtype.Int64:
 		data := make([]int64, n)
 		valid := make([]bool, n)
-		for i, hash := range hashes {
+		for i, hash := range groupOrder {
 			indices := groups[hash]
 			if first {
 				for _, idx := range indices {
@@ -352,7 +621,7 @@ func applyFirstLast(col *series.Series, hashes []string, groups map[string][]int
 	case dtype.String:
 		data := make([]string, n)
 		valid := make([]bool, n)
-		for i, hash := range hashes {
+		for i, hash := range groupOrder {
 			indices := groups[hash]
 			if first {
 				for _, idx := range indices {
@@ -399,29 +668,12 @@ func (g *GroupByResult) AggExprs(exprs ...GroupByExpr) (*DataFrame, error) {
 		keyCols[i] = buildGroupKeyColumn(key, keyCol.DataType(), g.groupKeys, i, nGroups)
 	}
 
-	// Get ordered hashes for group iteration
-	orderedHashes := make([]string, nGroups)
-	for i, gk := range g.groupKeys {
-		if len(gk) == 1 {
-			orderedHashes[i] = fmt.Sprintf("%v", gk[0])
-		} else {
-			h := ""
-			for j, v := range gk {
-				if j > 0 {
-					h += "\x00"
-				}
-				h += fmt.Sprintf("%v", v)
-			}
-			orderedHashes[i] = h
-		}
-	}
-
 	// Evaluate each expression per group
 	aggCols := make([]*series.Series, len(exprs))
 	for ei, gbe := range exprs {
 		// For each group, build a sub-DataFrame, evaluate the expression, collect scalar results
 		results := make([]*series.Series, nGroups)
-		for gi, hash := range orderedHashes {
+		for gi, hash := range g.groupOrder {
 			indices := g.groups[hash]
 			subCols := make([]*series.Series, len(g.df.Columns()))
 			for ci, col := range g.df.Columns() {

@@ -2,6 +2,7 @@ package dataframe
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/msjurset/golars/internal/bitmap"
 	"github.com/msjurset/golars/internal/series"
@@ -35,8 +36,20 @@ func (df *DataFrame) Filter(mask *series.Series) (*DataFrame, error) {
 // corresponding bit in the bitmap is set.
 func (df *DataFrame) FilterMask(mask *bitmap.Bitmap) *DataFrame {
 	cols := make([]*series.Series, len(df.columns))
-	for i, c := range df.columns {
-		cols[i] = c.Filter(mask)
+	if len(df.columns) > 1 {
+		var wg sync.WaitGroup
+		for i, c := range df.columns {
+			wg.Add(1)
+			go func(idx int, s *series.Series) {
+				defer wg.Done()
+				cols[idx] = s.Filter(mask)
+			}(i, c)
+		}
+		wg.Wait()
+	} else {
+		for i, c := range df.columns {
+			cols[i] = c.Filter(mask)
+		}
 	}
 	// All filtered columns have the same length and original unique names,
 	// so New cannot fail here.

@@ -71,6 +71,13 @@ func (b *Bitmap) Len() int {
 	return b.len
 }
 
+// Words returns the underlying []uint64 storage. Callers must not modify the
+// returned slice unless they understand the internal layout (bit i lives in
+// word i/64, bit position i%64).
+func (b *Bitmap) Words() []uint64 {
+	return b.data
+}
+
 // Set sets bit i, marking the value at position i as valid (not null).
 // Panics if i is out of range.
 func (b *Bitmap) Set(i int) {
@@ -183,11 +190,38 @@ func (b *Bitmap) Slice(start, end int) *Bitmap {
 		panic("bitmap: slice bounds out of range")
 	}
 	newLen := end - start
+	if newLen == 0 {
+		return NewEmpty(0)
+	}
 	result := NewEmpty(newLen)
-	for i := 0; i < newLen; i++ {
-		if b.IsSet(start + i) {
-			result.Set(i)
+
+	srcWord := start / wordSize
+	srcBit := uint(start % wordSize)
+
+	if srcBit == 0 {
+		// Aligned: bulk copy words directly.
+		nWords := newLen / wordSize
+		copy(result.data[:nWords], b.data[srcWord:srcWord+nWords])
+		// Copy remaining bits from the last partial word.
+		rem := newLen % wordSize
+		if rem != 0 {
+			mask := (uint64(1) << uint(rem)) - 1
+			result.data[nWords] = b.data[srcWord+nWords] & mask
 		}
+	} else {
+		// Unaligned: shift pairs of words.
+		nResultWords := wordsNeeded(newLen)
+		rshift := srcBit
+		lshift := 64 - rshift
+		for i := 0; i < nResultWords; i++ {
+			lo := b.data[srcWord+i] >> rshift
+			var hi uint64
+			if srcWord+i+1 < len(b.data) {
+				hi = b.data[srcWord+i+1] << lshift
+			}
+			result.data[i] = lo | hi
+		}
+		result.clearTrailingBits()
 	}
 	return result
 }
