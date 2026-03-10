@@ -9,9 +9,15 @@ import (
 // FilterTyped returns a new TypedArray containing only the elements of arr
 // where the corresponding bit in mask is set. The validity bitmap is
 // filtered accordingly.
+//
+// Dense-mask optimization: when an entire 64-bit word is all-ones (or the
+// final partial word has all valid bits set), the function uses copy() for
+// the contiguous span, which the compiler lowers to an optimized memmove.
+// PopCount is O(n/64) and cached-friendly, so callers sharing a mask across
+// multiple columns pay negligible repeated cost.
 func FilterTyped[T any](arr *TypedArray[T], mask *bitmap.Bitmap) *TypedArray[T] {
 	n := mask.PopCount()
-	data := make([]T, 0, n)
+	data := make([]T, n)
 	var validity *bitmap.Bitmap
 	hasNulls := arr.Validity() != nil
 	srcValidity := arr.Validity()
@@ -30,13 +36,34 @@ func FilterTyped[T any](arr *TypedArray[T], mask *bitmap.Bitmap) *TypedArray[T] 
 			continue
 		}
 		base := wi * 64
+		remaining := arrLen - base
+		if remaining > 64 {
+			remaining = 64
+		}
+
+		// Dense fast path: all bits in this word are set — bulk copy.
+		allSet := w == ^uint64(0) || (remaining < 64 && w == (1<<uint(remaining))-1)
+		if allSet {
+			copy(data[j:], values[base:base+remaining])
+			if hasNulls {
+				for k := 0; k < remaining; k++ {
+					if !srcValidity.IsSet(base + k) {
+						validity.Clear(j + k)
+					}
+				}
+			}
+			j += remaining
+			continue
+		}
+
+		// Sparse path: extract set bits one at a time.
 		for w != 0 {
 			tz := bits.TrailingZeros64(w)
 			i := base + tz
 			if i >= arrLen {
 				break
 			}
-			data = append(data, values[i])
+			data[j] = values[i]
 			if hasNulls && !srcValidity.IsSet(i) {
 				validity.Clear(j)
 			}
@@ -73,6 +100,9 @@ func TakeTyped[T any](arr *TypedArray[T], indices []int) *TypedArray[T] {
 // FilterBoolean returns a new BooleanArray containing only the elements of arr
 // where the corresponding bit in mask is set. The validity bitmap is filtered
 // accordingly.
+//
+// Dense-mask optimization: when all bits in a word are set and the output
+// position is word-aligned, data and validity words are copied directly.
 func FilterBoolean(arr *BooleanArray, mask *bitmap.Bitmap) *BooleanArray {
 	n := mask.PopCount()
 	data := bitmap.NewEmpty(n)
@@ -86,6 +116,7 @@ func FilterBoolean(arr *BooleanArray, mask *bitmap.Bitmap) *BooleanArray {
 	}
 
 	words := mask.Words()
+	srcDataWords := srcData.Words()
 	arrLen := arr.Len()
 	j := 0
 
@@ -94,6 +125,38 @@ func FilterBoolean(arr *BooleanArray, mask *bitmap.Bitmap) *BooleanArray {
 			continue
 		}
 		base := wi * 64
+		remaining := arrLen - base
+		if remaining > 64 {
+			remaining = 64
+		}
+
+		allSet := w == ^uint64(0) || (remaining < 64 && w == (1<<uint(remaining))-1)
+		if allSet {
+			// Dense fast path: copy data bits. When output is word-aligned
+			// we can use SetWord directly; otherwise fall through to per-bit.
+			if j%64 == 0 {
+				outWord := j / 64
+				if remaining == 64 {
+					data.SetWord(outWord, srcDataWords[wi])
+				} else {
+					// Partial last word — mask to remaining bits.
+					data.SetWord(outWord, srcDataWords[wi]&((1<<uint(remaining))-1))
+				}
+				if hasNulls {
+					srcValidityWords := srcValidity.Words()
+					if remaining == 64 {
+						validity.SetWord(outWord, srcValidityWords[wi])
+					} else {
+						validity.SetWord(outWord, srcValidityWords[wi]&((1<<uint(remaining))-1))
+					}
+				}
+				j += remaining
+				continue
+			}
+			// Output not word-aligned — fall through to per-bit below.
+		}
+
+		// Sparse path (or unaligned dense): extract set bits one at a time.
 		for w != 0 {
 			tz := bits.TrailingZeros64(w)
 			i := base + tz
@@ -118,6 +181,10 @@ func FilterBoolean(arr *BooleanArray, mask *bitmap.Bitmap) *BooleanArray {
 // where the corresponding bit in mask is set. The validity bitmap is filtered
 // accordingly. It operates directly on the offset-based byte storage to avoid
 // per-element string allocations.
+//
+// Dense-mask optimization: when all bits in a word are set, the byte data for
+// the entire span is contiguous in the source, so a single copy() handles all
+// 64 (or fewer) strings at once. Offsets are computed with a simple add loop.
 func FilterString(arr *StringArray, mask *bitmap.Bitmap) *StringArray {
 	n := mask.PopCount()
 	srcOffsets := arr.Offsets()
@@ -140,6 +207,18 @@ func FilterString(arr *StringArray, mask *bitmap.Bitmap) *StringArray {
 			continue
 		}
 		base := wi * 64
+		remaining := arrLen - base
+		if remaining > 64 {
+			remaining = 64
+		}
+
+		allSet := w == ^uint64(0) || (remaining < 64 && w == (1<<uint(remaining))-1)
+		if allSet {
+			// Contiguous span: byte range is [offsets[base], offsets[base+remaining]).
+			totalBytes += int(srcOffsets[base+remaining] - srcOffsets[base])
+			continue
+		}
+
 		for w != 0 {
 			tz := bits.TrailingZeros64(w)
 			i := base + tz
@@ -163,6 +242,36 @@ func FilterString(arr *StringArray, mask *bitmap.Bitmap) *StringArray {
 			continue
 		}
 		base := wi * 64
+		remaining := arrLen - base
+		if remaining > 64 {
+			remaining = 64
+		}
+
+		allSet := w == ^uint64(0) || (remaining < 64 && w == (1<<uint(remaining))-1)
+		if allSet {
+			// Dense fast path: single bulk copy of the byte block.
+			byteStart := srcOffsets[base]
+			byteEnd := srcOffsets[base+remaining]
+			copy(data[pos:], srcData[byteStart:byteEnd])
+			// Build offsets: each offset is the source offset shifted by
+			// (pos - byteStart) to account for the new data position.
+			delta := pos - byteStart
+			for k := 0; k < remaining; k++ {
+				offsets[j+k+1] = srcOffsets[base+k+1] + delta
+			}
+			if hasNulls {
+				for k := 0; k < remaining; k++ {
+					if !srcValidity.IsSet(base + k) {
+						validity.Clear(j + k)
+					}
+				}
+			}
+			pos += byteEnd - byteStart
+			j += remaining
+			continue
+		}
+
+		// Sparse path: copy each string individually.
 		for w != 0 {
 			tz := bits.TrailingZeros64(w)
 			i := base + tz

@@ -2,7 +2,6 @@ package dataframe
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/msjurset/golars/internal/series"
 )
@@ -29,13 +28,18 @@ func (df *DataFrame) Unique(subset ...string) (*DataFrame, error) {
 		}
 	}
 
-	seen := make(map[string]struct{}, df.height)
+	hashers := make([]colHasher, len(keyCols))
+	for i, c := range keyCols {
+		hashers[i] = newColHasher(c)
+	}
+
+	ht := newGroupHashTable(df.height / 2) // estimate ~50% unique
 	indices := make([]int, 0, df.height)
 
 	for i := 0; i < df.height; i++ {
-		key := rowKey(keyCols, i)
-		if _, exists := seen[key]; !exists {
-			seen[key] = struct{}{}
+		h := hashRowFast(hashers, i)
+		gid := ht.probe(hashers, i, h)
+		if int(gid) == len(indices) {
 			indices = append(indices, i)
 		}
 	}
@@ -44,24 +48,4 @@ func (df *DataFrame) Unique(subset ...string) (*DataFrame, error) {
 		return df.Clone(), nil
 	}
 	return df.take(indices), nil
-}
-
-// rowKey builds a string key for the row at index i across the given columns.
-func rowKey(cols []*series.Series, i int) string {
-	if len(cols) == 1 {
-		return singleColKey(cols[0], i)
-	}
-	parts := make([]string, len(cols))
-	for j, c := range cols {
-		parts[j] = singleColKey(c, i)
-	}
-	return strings.Join(parts, "\x00")
-}
-
-// singleColKey returns a string representation of a single cell for hashing.
-func singleColKey(s *series.Series, i int) string {
-	if s.IsNull(i) {
-		return "\x01null"
-	}
-	return formatValue(s, i)
 }

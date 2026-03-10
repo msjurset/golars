@@ -9,6 +9,94 @@ import (
 	"github.com/msjurset/golars/internal/bitmap"
 )
 
+// isSorted checks if vals are in ascending order. O(n) with early exit.
+func isSorted[T cmp.Ordered](vals []T) bool {
+	for i := 1; i < len(vals); i++ {
+		if vals[i] < vals[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
+// isSortedDesc checks if vals are in descending order. O(n) with early exit.
+func isSortedDesc[T cmp.Ordered](vals []T) bool {
+	for i := 1; i < len(vals); i++ {
+		if vals[i] > vals[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
+// isSortedIndirect checks if vals accessed through indices are in ascending order.
+func isSortedIndirect[T cmp.Ordered](vals []T, indices []int) bool {
+	for i := 1; i < len(indices); i++ {
+		if vals[indices[i]] < vals[indices[i-1]] {
+			return false
+		}
+	}
+	return true
+}
+
+// isSortedDescIndirect checks if vals accessed through indices are in descending order.
+func isSortedDescIndirect[T cmp.Ordered](vals []T, indices []int) bool {
+	for i := 1; i < len(indices); i++ {
+		if vals[indices[i]] > vals[indices[i-1]] {
+			return false
+		}
+	}
+	return true
+}
+
+// reverseIndices reverses a slice of indices in-place.
+func reverseIndices(indices []int) {
+	for l, r := 0, len(indices)-1; l < r; l, r = l+1, r-1 {
+		indices[l], indices[r] = indices[r], indices[l]
+	}
+}
+
+// checkSortedShortcut checks if data is already sorted and returns early if so.
+// Returns true if the shortcut was applied (caller should return indices).
+func checkSortedShortcut[T cmp.Ordered](vals []T, indices []int, validCount, n int, descending bool) bool {
+	hasValidity := validCount != n
+	if !hasValidity {
+		// No nulls: check vals directly
+		if !descending && isSorted(vals) {
+			return true
+		}
+		if descending && isSortedDesc(vals) {
+			return true
+		}
+		if descending && isSorted(vals) {
+			reverseIndices(indices[:validCount])
+			return true
+		}
+		if !descending && isSortedDesc(vals) {
+			reverseIndices(indices[:validCount])
+			return true
+		}
+	} else {
+		// Nulls present: check via indices
+		validIndices := indices[:validCount]
+		if !descending && isSortedIndirect(vals, validIndices) {
+			return true
+		}
+		if descending && isSortedDescIndirect(vals, validIndices) {
+			return true
+		}
+		if descending && isSortedIndirect(vals, validIndices) {
+			reverseIndices(validIndices)
+			return true
+		}
+		if !descending && isSortedDescIndirect(vals, validIndices) {
+			reverseIndices(validIndices)
+			return true
+		}
+	}
+	return false
+}
+
 // isMostlySorted samples values and returns true if the data appears to be
 // nearly sorted (ascending or descending). Samples up to 256 evenly-spaced
 // elements and checks if >90% are in order.
@@ -313,6 +401,10 @@ func ArgSortInt64(a *TypedArray[int64], descending bool) []int {
 	vals := a.Values()
 	validIndices := indices[:validCount]
 
+	if checkSortedShortcut(vals, indices, validCount, n, descending) {
+		return indices
+	}
+
 	if isMostlySorted(vals, descending) {
 		slices.SortStableFunc(validIndices, func(i, j int) int {
 			if descending {
@@ -352,6 +444,10 @@ func ArgSortInt32(a *TypedArray[int32], descending bool) []int {
 
 	vals := a.Values()
 	validIndices := indices[:validCount]
+
+	if checkSortedShortcut(vals, indices, validCount, n, descending) {
+		return indices
+	}
 
 	if isMostlySorted(vals, descending) {
 		slices.SortStableFunc(validIndices, func(i, j int) int {
@@ -451,6 +547,10 @@ func ArgSortUint64(a *TypedArray[uint64], descending bool) []int {
 	vals := a.Values()
 	validIndices := indices[:validCount]
 
+	if checkSortedShortcut(vals, indices, validCount, n, descending) {
+		return indices
+	}
+
 	if isMostlySorted(vals, descending) {
 		slices.SortStableFunc(validIndices, func(i, j int) int {
 			if descending {
@@ -490,6 +590,10 @@ func ArgSortUint32(a *TypedArray[uint32], descending bool) []int {
 
 	vals := a.Values()
 	validIndices := indices[:validCount]
+
+	if checkSortedShortcut(vals, indices, validCount, n, descending) {
+		return indices
+	}
 
 	if isMostlySorted(vals, descending) {
 		slices.SortStableFunc(validIndices, func(i, j int) int {
@@ -589,6 +693,10 @@ func ArgSortFloat64(a *TypedArray[float64], descending bool) []int {
 	vals := a.Values()
 	validIndices := indices[:validCount]
 
+	if checkSortedShortcut(vals, indices, validCount, n, descending) {
+		return indices
+	}
+
 	if isMostlySorted(vals, descending) {
 		slices.SortStableFunc(validIndices, func(i, j int) int {
 			if descending {
@@ -628,6 +736,10 @@ func ArgSortFloat32(a *TypedArray[float32], descending bool) []int {
 
 	vals := a.Values()
 	validIndices := indices[:validCount]
+
+	if checkSortedShortcut(vals, indices, validCount, n, descending) {
+		return indices
+	}
 
 	if isMostlySorted(vals, descending) {
 		slices.SortStableFunc(validIndices, func(i, j int) int {

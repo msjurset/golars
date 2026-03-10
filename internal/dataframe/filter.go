@@ -23,7 +23,7 @@ func (df *DataFrame) Filter(mask *series.Series) (*DataFrame, error) {
 		return nil, fmt.Errorf("golars: filter mask length %d does not match DataFrame height %d", mask.Len(), df.height)
 	}
 
-	bm := ba.DataBitmap().Clone()
+	bm := ba.DataBitmap()
 	if mask.HasNulls() {
 		bm = bm.And(mask.Validity())
 	}
