@@ -3,6 +3,8 @@ package dataframe
 import (
 	"fmt"
 
+	"github.com/msjurset/golars/internal/array"
+	"github.com/msjurset/golars/internal/bitmap"
 	"github.com/msjurset/golars/internal/dtype"
 	"github.com/msjurset/golars/internal/series"
 )
@@ -44,124 +46,238 @@ func Concat(dfs ...*DataFrame) (*DataFrame, error) {
 // concatColumn concatenates a single column across all DataFrames.
 func concatColumn(name string, dt dtype.DataType, dfs []*DataFrame, colIdx int, totalHeight int) *series.Series {
 	switch dt {
-	case dtype.Int64:
-		return concatTypedColumn[int64](name, dfs, colIdx, totalHeight,
-			func(s *series.Series, i int) int64 { v, _ := s.GetInt64(i); return v },
-			series.NewInt64, series.NewInt64WithValidity)
+	case dtype.Int8:
+		return concatTypedColumn[int8](name, dt, dfs, colIdx, totalHeight)
+	case dtype.Int16:
+		return concatTypedColumn[int16](name, dt, dfs, colIdx, totalHeight)
+	case dtype.Int32, dtype.Date:
+		return concatTypedColumn[int32](name, dt, dfs, colIdx, totalHeight)
+	case dtype.Int64, dtype.DateTime, dtype.Time, dtype.Duration:
+		return concatTypedColumn[int64](name, dt, dfs, colIdx, totalHeight)
+	case dtype.UInt8:
+		return concatTypedColumn[uint8](name, dt, dfs, colIdx, totalHeight)
+	case dtype.UInt16:
+		return concatTypedColumn[uint16](name, dt, dfs, colIdx, totalHeight)
+	case dtype.UInt32:
+		return concatTypedColumn[uint32](name, dt, dfs, colIdx, totalHeight)
+	case dtype.UInt64:
+		return concatTypedColumn[uint64](name, dt, dfs, colIdx, totalHeight)
+	case dtype.Float32:
+		return concatTypedColumn[float32](name, dt, dfs, colIdx, totalHeight)
 	case dtype.Float64:
-		return concatTypedColumn[float64](name, dfs, colIdx, totalHeight,
-			func(s *series.Series, i int) float64 { v, _ := s.GetFloat64(i); return v },
-			series.NewFloat64, series.NewFloat64WithValidity)
+		return concatTypedColumn[float64](name, dt, dfs, colIdx, totalHeight)
 	case dtype.String:
 		return concatStringColumn(name, dfs, colIdx, totalHeight)
 	case dtype.Boolean:
 		return concatBoolColumn(name, dfs, colIdx, totalHeight)
 	default:
-		// Fallback: treat as string.
 		return concatStringColumn(name, dfs, colIdx, totalHeight)
 	}
 }
 
-// concatTypedColumn concatenates a numeric column across DataFrames.
+// concatTypedColumn concatenates a numeric/typed column using bulk copy.
 func concatTypedColumn[T any](
 	name string,
+	dt dtype.DataType,
 	dfs []*DataFrame,
 	colIdx int,
 	totalHeight int,
-	getter func(*series.Series, int) T,
-	newFn func(string, []T) *series.Series,
-	newWithValidityFn func(string, []T, []bool) *series.Series,
 ) *series.Series {
-	data := make([]T, 0, totalHeight)
+	data := make([]T, totalHeight)
 	hasNulls := false
+	offset := 0
+
 	for _, df := range dfs {
 		c := df.columns[colIdx]
-		if c.HasNulls() {
+		ta := c.Array().(*array.TypedArray[T])
+		vals := ta.Values()
+		copy(data[offset:], vals)
+		if ta.Validity() != nil {
 			hasNulls = true
 		}
-		for i := 0; i < c.Len(); i++ {
-			data = append(data, getter(c, i))
-		}
+		offset += len(vals)
 	}
-	if !hasNulls {
-		return newFn(name, data)
+
+	var validity *bitmap.Bitmap
+	if hasNulls {
+		validity = concatBitmaps(dfs, colIdx, totalHeight)
 	}
-	valid := make([]bool, totalHeight)
-	offset := 0
-	for _, df := range dfs {
-		c := df.columns[colIdx]
-		for i := 0; i < c.Len(); i++ {
-			valid[offset+i] = c.IsValid(i)
-		}
-		offset += c.Len()
-	}
-	return newWithValidityFn(name, data, valid)
+
+	return series.New(name, array.NewTypedArray(data, dt, validity))
 }
 
-// concatStringColumn concatenates string columns across DataFrames.
+// concatStringColumn concatenates string columns using bulk byte/offset copy.
 func concatStringColumn(name string, dfs []*DataFrame, colIdx int, totalHeight int) *series.Series {
-	data := make([]string, 0, totalHeight)
+	// Calculate total bytes needed
+	totalBytes := 0
 	hasNulls := false
 	for _, df := range dfs {
-		c := df.columns[colIdx]
-		if c.HasNulls() {
+		sa := df.columns[colIdx].StringArray()
+		totalBytes += len(sa.Data())
+		if sa.Validity() != nil {
 			hasNulls = true
 		}
-		for i := 0; i < c.Len(); i++ {
-			if c.IsNull(i) {
-				data = append(data, "")
-			} else {
-				v, _ := c.GetString(i)
-				data = append(data, v)
-			}
-		}
 	}
-	if !hasNulls {
-		return series.NewString(name, data)
-	}
-	valid := make([]bool, totalHeight)
-	offset := 0
+
+	// Bulk copy bytes and build offsets
+	allData := make([]byte, totalBytes)
+	allOffsets := make([]int32, totalHeight+1)
+	allOffsets[0] = 0
+	byteOff := 0
+	elemOff := 1 // skip the leading 0
+
 	for _, df := range dfs {
-		c := df.columns[colIdx]
-		for i := 0; i < c.Len(); i++ {
-			valid[offset+i] = c.IsValid(i)
+		sa := df.columns[colIdx].StringArray()
+		srcData := sa.Data()
+		srcOffsets := sa.Offsets()
+		baseOffset := int32(byteOff)
+
+		copy(allData[byteOff:], srcData)
+		byteOff += len(srcData)
+
+		// Copy offsets (skip first 0), adjusting by base offset
+		n := len(srcOffsets) - 1
+		for i := 0; i < n; i++ {
+			allOffsets[elemOff+i] = srcOffsets[i+1] + baseOffset
 		}
-		offset += c.Len()
+		elemOff += n
 	}
-	return series.NewStringWithValidity(name, data, valid)
+
+	var validity *bitmap.Bitmap
+	if hasNulls {
+		validity = concatBitmaps(dfs, colIdx, totalHeight)
+	}
+
+	return series.New(name, array.NewStringArrayFromBytes(allData, allOffsets, validity))
 }
 
-// concatBoolColumn concatenates boolean columns across DataFrames.
+// concatBoolColumn concatenates boolean columns using bulk bitmap copy.
 func concatBoolColumn(name string, dfs []*DataFrame, colIdx int, totalHeight int) *series.Series {
-	data := make([]bool, 0, totalHeight)
 	hasNulls := false
 	for _, df := range dfs {
-		c := df.columns[colIdx]
-		if c.HasNulls() {
+		if df.columns[colIdx].BooleanArray().Validity() != nil {
 			hasNulls = true
-		}
-		ba := c.BooleanArray()
-		for i := 0; i < c.Len(); i++ {
-			if ba != nil && c.IsValid(i) {
-				data = append(data, ba.Value(i))
-			} else {
-				data = append(data, false)
-			}
+			break
 		}
 	}
-	if !hasNulls {
-		return series.NewBoolean(name, data)
+
+	// Build data bitmap
+	dataBm := bitmap.NewEmpty(totalHeight)
+	dataWords := dataBm.Words()
+	bitOffset := 0
+
+	for _, df := range dfs {
+		ba := df.columns[colIdx].BooleanArray()
+		srcBm := ba.DataBitmap()
+		srcWords := srcBm.Words()
+		n := ba.Len()
+		copyBitmapBits(dataWords, bitOffset, srcWords, n)
+		bitOffset += n
 	}
-	valid := make([]bool, totalHeight)
-	offset := 0
+
+	var validity *bitmap.Bitmap
+	if hasNulls {
+		validity = concatBitmaps(dfs, colIdx, totalHeight)
+	}
+
+	return series.New(name, array.NewBooleanArrayFromBitmap(dataBm, validity))
+}
+
+// concatBitmaps merges validity bitmaps from multiple DataFrames for a column.
+// Columns without nulls are treated as all-valid.
+func concatBitmaps(dfs []*DataFrame, colIdx int, totalHeight int) *bitmap.Bitmap {
+	result := bitmap.New(totalHeight) // all bits set
+	words := result.Words()
+	bitOffset := 0
+
 	for _, df := range dfs {
 		c := df.columns[colIdx]
-		for i := 0; i < c.Len(); i++ {
-			valid[offset+i] = c.IsValid(i)
+		n := c.Len()
+		v := c.Array().Validity()
+
+		if v != nil {
+			// Has nulls: copy source bitmap bits
+			copyBitmapBits(words, bitOffset, v.Words(), n)
 		}
-		offset += c.Len()
+		// If v == nil, all valid — bits already set from bitmap.New
+		bitOffset += n
 	}
-	return series.NewBooleanWithValidity(name, data, valid)
+
+	return result
+}
+
+// copyBitmapBits copies n bits from src words into dst words starting at dstBitOffset.
+func copyBitmapBits(dst []uint64, dstBitOffset int, src []uint64, n int) {
+	if n == 0 {
+		return
+	}
+
+	dstWord := dstBitOffset / 64
+	dstBit := uint(dstBitOffset % 64)
+
+	if dstBit == 0 {
+		// Aligned: bulk copy full words, then handle remainder
+		fullWords := n / 64
+		for i := 0; i < fullWords; i++ {
+			dst[dstWord+i] = src[i]
+		}
+		rem := n % 64
+		if rem > 0 {
+			mask := (uint64(1) << rem) - 1
+			dst[dstWord+fullWords] = (dst[dstWord+fullWords] &^ mask) | (src[fullWords] & mask)
+		}
+		return
+	}
+
+	// Unaligned: shift and merge
+	remaining := n
+	srcIdx := 0
+	for remaining > 0 {
+		bits := uint64(0)
+		if srcIdx < len(src) {
+			bits = src[srcIdx]
+		}
+		chunk := remaining
+		if chunk > 64 {
+			chunk = 64
+		}
+
+		// Mask to only the bits we need from this source word
+		srcMask := uint64(0)
+		if chunk >= 64 {
+			srcMask = ^uint64(0)
+		} else {
+			srcMask = (uint64(1) << chunk) - 1
+		}
+		bits &= srcMask
+
+		// Place lower portion into current dst word
+		avail := 64 - dstBit
+		if uint(chunk) <= avail {
+			// All bits fit in current word
+			dstMask := srcMask << dstBit
+			dst[dstWord] = (dst[dstWord] &^ dstMask) | (bits << dstBit)
+		} else {
+			// Split across two dst words
+			dst[dstWord] = (dst[dstWord] & ((uint64(1) << dstBit) - 1)) | (bits << dstBit)
+			dstWord++
+			overflow := bits >> avail
+			overflowBits := uint(chunk) - avail
+			overflowMask := (uint64(1) << overflowBits) - 1
+			dst[dstWord] = (dst[dstWord] &^ overflowMask) | (overflow & overflowMask)
+		}
+
+		dstBit += uint(chunk)
+		if dstBit >= 64 {
+			if uint(chunk) <= avail {
+				dstWord++
+			}
+			dstBit %= 64
+		}
+
+		remaining -= chunk
+		srcIdx++
+	}
 }
 
 // ConcatHorizontal concatenates DataFrames side by side. All DataFrames must

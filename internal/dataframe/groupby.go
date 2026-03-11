@@ -338,7 +338,7 @@ type GroupByResult struct {
 	keys       []string
 	nGroups    int
 	groupIDs   []int32  // per-row group ID (gid 0 = first group encountered)
-	groupKeys  [][]any  // key values per group, indexed by gid
+	firstRows  []int    // first row index for each group (indexed by gid)
 	keyHashers []colHasher
 }
 
@@ -350,11 +350,9 @@ func (df *DataFrame) GroupBy(keys ...string) (*GroupByResult, error) {
 		}
 	}
 
-	keyCols := make([]*series.Series, len(keys))
 	hashers := make([]colHasher, len(keys))
 	for i, k := range keys {
 		c, _ := df.Column(k)
-		keyCols[i] = c
 		hashers[i] = newColHasher(c)
 	}
 
@@ -372,25 +370,21 @@ func (df *DataFrame) GroupBy(keys ...string) (*GroupByResult, error) {
 
 	nGroups := int(ht.nGroups)
 
-	// Build group key values from each group's representative row (firstRow).
-	groupKeyValues := make([][]any, nGroups)
+	// Collect the first row index for each group from the hash table.
+	firstRows := make([]int, nGroups)
 	for i := range ht.slots {
 		s := &ht.slots[i]
 		if s.firstRow != htEmpty {
-			vals := make([]any, len(keys))
-			for j, col := range keyCols {
-				vals[j] = getAny(col, int(s.firstRow))
-			}
-			groupKeyValues[s.gid] = vals
+			firstRows[s.gid] = int(s.firstRow)
 		}
 	}
 
 	return &GroupByResult{
-		df:         df,
-		keys:       keys,
-		nGroups:    nGroups,
-		groupIDs:   groupIDs,
-		groupKeys:  groupKeyValues,
+		df:        df,
+		keys:      keys,
+		nGroups:   nGroups,
+		groupIDs:  groupIDs,
+		firstRows: firstRows,
 		keyHashers: hashers,
 	}, nil
 }
@@ -402,7 +396,7 @@ func (g *GroupByResult) Agg(aggs map[string]AggFunc) (*DataFrame, error) {
 	keyCols := make([]*series.Series, len(g.keys))
 	for i, key := range g.keys {
 		keyCol, _ := g.df.Column(key)
-		keyCols[i] = buildGroupKeyColumn(key, keyCol.DataType(), g.groupKeys, i, nGroups)
+		keyCols[i] = keyCol.Take(g.firstRows)
 	}
 
 	var aggCols []*series.Series
@@ -439,78 +433,6 @@ const (
 	AggLast
 )
 
-func getAny(s *series.Series, i int) any {
-	if s.IsNull(i) {
-		return nil
-	}
-	switch s.DataType() {
-	case dtype.Int64:
-		v, _ := s.GetInt64(i)
-		return v
-	case dtype.Float64:
-		v, _ := s.GetFloat64(i)
-		return v
-	case dtype.String:
-		v, _ := s.GetString(i)
-		return v
-	case dtype.Boolean:
-		v, _ := s.GetBool(i)
-		return v
-	default:
-		return nil
-	}
-}
-
-func buildGroupKeyColumn(name string, dt dtype.DataType, groupKeys [][]any, keyIdx int, nGroups int) *series.Series {
-	switch dt {
-	case dtype.Int64:
-		data := make([]int64, nGroups)
-		valid := make([]bool, nGroups)
-		for i, gk := range groupKeys {
-			if gk[keyIdx] != nil {
-				data[i] = gk[keyIdx].(int64)
-				valid[i] = true
-			}
-		}
-		hasNulls := false
-		for _, v := range valid {
-			if !v {
-				hasNulls = true
-				break
-			}
-		}
-		if hasNulls {
-			return series.NewInt64WithValidity(name, data, valid)
-		}
-		return series.NewInt64(name, data)
-	case dtype.Float64:
-		data := make([]float64, nGroups)
-		for i, gk := range groupKeys {
-			if gk[keyIdx] != nil {
-				data[i] = gk[keyIdx].(float64)
-			}
-		}
-		return series.NewFloat64(name, data)
-	case dtype.String:
-		data := make([]string, nGroups)
-		for i, gk := range groupKeys {
-			if gk[keyIdx] != nil {
-				data[i] = gk[keyIdx].(string)
-			}
-		}
-		return series.NewString(name, data)
-	case dtype.Boolean:
-		data := make([]bool, nGroups)
-		for i, gk := range groupKeys {
-			if gk[keyIdx] != nil {
-				data[i] = gk[keyIdx].(bool)
-			}
-		}
-		return series.NewBoolean(name, data)
-	default:
-		return series.NewString(name, make([]string, nGroups))
-	}
-}
 
 func applyGroupAgg(col *series.Series, groupIDs []int32, fn AggFunc, nGroups int) (*series.Series, error) {
 	name := col.Name()
@@ -734,7 +656,7 @@ func (g *GroupByResult) AggExprs(exprs ...GroupByExpr) (*DataFrame, error) {
 	keyCols := make([]*series.Series, len(g.keys))
 	for i, key := range g.keys {
 		keyCol, _ := g.df.Column(key)
-		keyCols[i] = buildGroupKeyColumn(key, keyCol.DataType(), g.groupKeys, i, nGroups)
+		keyCols[i] = keyCol.Take(g.firstRows)
 	}
 
 	aggCols := make([]*series.Series, len(exprs))

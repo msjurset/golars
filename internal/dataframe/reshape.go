@@ -241,6 +241,29 @@ func (df *DataFrame) Explode(colName string) (*DataFrame, error) {
 // helpers
 // ---------------------------------------------------------------------------
 
+// getAny returns the value at index i as an interface{}.
+func getAny(s *series.Series, i int) any {
+	if s.IsNull(i) {
+		return nil
+	}
+	switch s.DataType() {
+	case dtype.Int64:
+		v, _ := s.GetInt64(i)
+		return v
+	case dtype.Float64:
+		v, _ := s.GetFloat64(i)
+		return v
+	case dtype.String:
+		v, _ := s.GetString(i)
+		return v
+	case dtype.Boolean:
+		v, _ := s.GetBool(i)
+		return v
+	default:
+		return nil
+	}
+}
+
 func anyToString(v any) string {
 	if v == nil {
 		return "<nil>"

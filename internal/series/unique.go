@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	htEmpty    = int32(-1)
-	fibHash64  = uint64(0x9E3779B97F4A7C15)
-	fnvOffset  = uint64(14695981039346656037)
-	fnvPrime   = uint64(1099511628211)
+	htEmpty   = int32(-1)
+	fibHash64 = uint64(0x9E3779B97F4A7C15)
+	fnvOffset = uint64(14695981039346656037)
+	fnvPrime  = uint64(1099511628211)
 )
 
 // nextPow2 returns the smallest power of 2 >= n, minimum 16.
@@ -30,6 +30,14 @@ func nextPow2(n int) int {
 	n |= n >> 16
 	n |= n >> 32
 	return n + 1
+}
+
+// ensureNonZero guarantees hash is never 0 (our empty sentinel).
+func ensureNonZero(h uint64) uint64 {
+	if h == 0 {
+		return 1
+	}
+	return h
 }
 
 // Unique returns a new Series containing only unique values. Order is preserved
@@ -69,61 +77,63 @@ func uniqueInt64(s *Series) *Series {
 		return s
 	}
 	vals := ta.Values()
-	mask := bitmap.NewEmpty(n)
 
+	// Flat value hash set: store int64 values directly, use byte array for occupancy.
+	// This gives 8 bytes per slot (value) + 1 byte (occupied), much smaller than
+	// 16 bytes per struct slot, improving cache utilization for large tables.
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htVals := make([]int64, cap_)
+	htOcc := make([]byte, cap_) // 0 = empty, 1 = occupied
 
 	if !s.HasNulls() {
-		// null-free fast path
+		result := make([]int64, 0, n)
 		for i := 0; i < n; i++ {
-			h := uint64(vals[i]) * fibHash64
+			v := vals[i]
+			h := uint64(v) * fibHash64
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
+				if htOcc[pos] == 0 {
+					htOcc[pos] = 1
+					htVals[pos] = v
+					result = append(result, v)
 					break
 				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break // duplicate
+				if htVals[pos] == v {
+					break
 				}
 				pos = (pos + 1) & hmask
 			}
 		}
-	} else {
-		validity := ta.Validity()
-		seenNull := false
-		for i := 0; i < n; i++ {
-			if validity != nil && !validity.IsSet(i) {
-				if !seenNull {
-					seenNull = true
-					mask.Set(i)
-				}
-				continue
+		return New(s.name, array.NewTypedArray(result, dtype.Int64, nil))
+	}
+
+	// Path with nulls: use bitmap + filter to preserve null validity
+	mask := bitmap.NewEmpty(n)
+	validity := ta.Validity()
+	seenNull := false
+	for i := 0; i < n; i++ {
+		if validity != nil && !validity.IsSet(i) {
+			if !seenNull {
+				seenNull = true
+				mask.Set(i)
 			}
-			h := uint64(vals[i]) * fibHash64
-			pos := h & hmask
-			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
-					break
-				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break
-				}
-				pos = (pos + 1) & hmask
+			continue
+		}
+		v := vals[i]
+		h := uint64(v) * fibHash64
+		pos := h & hmask
+		for {
+			if htOcc[pos] == 0 {
+				htOcc[pos] = 1
+				htVals[pos] = v
+				mask.Set(i)
+				break
 			}
+			if htVals[pos] == v {
+				break
+			}
+			pos = (pos + 1) & hmask
 		}
 	}
 	return New(s.name, array.FilterTyped(ta, mask))
@@ -141,60 +151,59 @@ func uniqueFloat64(s *Series) *Series {
 		return s
 	}
 	vals := ta.Values()
-	mask := bitmap.NewEmpty(n)
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htVals := make([]float64, cap_)
+	htOcc := make([]byte, cap_)
 
 	if !s.HasNulls() {
+		result := make([]float64, 0, n)
 		for i := 0; i < n; i++ {
-			h := math.Float64bits(vals[i]) * fibHash64
+			v := vals[i]
+			h := math.Float64bits(v) * fibHash64
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
+				if htOcc[pos] == 0 {
+					htOcc[pos] = 1
+					htVals[pos] = v
+					result = append(result, v)
 					break
 				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
+				if htVals[pos] == v {
 					break
 				}
 				pos = (pos + 1) & hmask
 			}
 		}
-	} else {
-		validity := ta.Validity()
-		seenNull := false
-		for i := 0; i < n; i++ {
-			if validity != nil && !validity.IsSet(i) {
-				if !seenNull {
-					seenNull = true
-					mask.Set(i)
-				}
-				continue
+		return New(s.name, array.NewTypedArray(result, dtype.Float64, nil))
+	}
+
+	mask := bitmap.NewEmpty(n)
+	validity := ta.Validity()
+	seenNull := false
+	for i := 0; i < n; i++ {
+		if validity != nil && !validity.IsSet(i) {
+			if !seenNull {
+				seenNull = true
+				mask.Set(i)
 			}
-			h := math.Float64bits(vals[i]) * fibHash64
-			pos := h & hmask
-			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
-					break
-				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break
-				}
-				pos = (pos + 1) & hmask
+			continue
+		}
+		v := vals[i]
+		h := math.Float64bits(v) * fibHash64
+		pos := h & hmask
+		for {
+			if htOcc[pos] == 0 {
+				htOcc[pos] = 1
+				htVals[pos] = v
+				mask.Set(i)
+				break
 			}
+			if htVals[pos] == v {
+				break
+			}
+			pos = (pos + 1) & hmask
 		}
 	}
 	return New(s.name, array.FilterTyped(ta, mask))
@@ -212,60 +221,59 @@ func uniqueInt32(s *Series) *Series {
 		return s
 	}
 	vals := ta.Values()
-	mask := bitmap.NewEmpty(n)
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htVals := make([]int32, cap_)
+	htOcc := make([]byte, cap_)
 
 	if !s.HasNulls() {
+		result := make([]int32, 0, n)
 		for i := 0; i < n; i++ {
-			h := uint64(vals[i]) * fibHash64
+			v := vals[i]
+			h := uint64(v) * fibHash64
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
+				if htOcc[pos] == 0 {
+					htOcc[pos] = 1
+					htVals[pos] = v
+					result = append(result, v)
 					break
 				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
+				if htVals[pos] == v {
 					break
 				}
 				pos = (pos + 1) & hmask
 			}
 		}
-	} else {
-		validity := ta.Validity()
-		seenNull := false
-		for i := 0; i < n; i++ {
-			if validity != nil && !validity.IsSet(i) {
-				if !seenNull {
-					seenNull = true
-					mask.Set(i)
-				}
-				continue
+		return New(s.name, array.NewTypedArray(result, dtype.Int32, nil))
+	}
+
+	mask := bitmap.NewEmpty(n)
+	validity := ta.Validity()
+	seenNull := false
+	for i := 0; i < n; i++ {
+		if validity != nil && !validity.IsSet(i) {
+			if !seenNull {
+				seenNull = true
+				mask.Set(i)
 			}
-			h := uint64(vals[i]) * fibHash64
-			pos := h & hmask
-			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
-					break
-				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break
-				}
-				pos = (pos + 1) & hmask
+			continue
+		}
+		v := vals[i]
+		h := uint64(v) * fibHash64
+		pos := h & hmask
+		for {
+			if htOcc[pos] == 0 {
+				htOcc[pos] = 1
+				htVals[pos] = v
+				mask.Set(i)
+				break
 			}
+			if htVals[pos] == v {
+				break
+			}
+			pos = (pos + 1) & hmask
 		}
 	}
 	return New(s.name, array.FilterTyped(ta, mask))
@@ -283,60 +291,59 @@ func uniqueUInt64(s *Series) *Series {
 		return s
 	}
 	vals := ta.Values()
-	mask := bitmap.NewEmpty(n)
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htVals := make([]uint64, cap_)
+	htOcc := make([]byte, cap_)
 
 	if !s.HasNulls() {
+		result := make([]uint64, 0, n)
 		for i := 0; i < n; i++ {
-			h := vals[i] * fibHash64
+			v := vals[i]
+			h := v * fibHash64
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
+				if htOcc[pos] == 0 {
+					htOcc[pos] = 1
+					htVals[pos] = v
+					result = append(result, v)
 					break
 				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
+				if htVals[pos] == v {
 					break
 				}
 				pos = (pos + 1) & hmask
 			}
 		}
-	} else {
-		validity := ta.Validity()
-		seenNull := false
-		for i := 0; i < n; i++ {
-			if validity != nil && !validity.IsSet(i) {
-				if !seenNull {
-					seenNull = true
-					mask.Set(i)
-				}
-				continue
+		return New(s.name, array.NewTypedArray(result, dtype.UInt64, nil))
+	}
+
+	mask := bitmap.NewEmpty(n)
+	validity := ta.Validity()
+	seenNull := false
+	for i := 0; i < n; i++ {
+		if validity != nil && !validity.IsSet(i) {
+			if !seenNull {
+				seenNull = true
+				mask.Set(i)
 			}
-			h := vals[i] * fibHash64
-			pos := h & hmask
-			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
-					break
-				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break
-				}
-				pos = (pos + 1) & hmask
+			continue
+		}
+		v := vals[i]
+		h := v * fibHash64
+		pos := h & hmask
+		for {
+			if htOcc[pos] == 0 {
+				htOcc[pos] = 1
+				htVals[pos] = v
+				mask.Set(i)
+				break
 			}
+			if htVals[pos] == v {
+				break
+			}
+			pos = (pos + 1) & hmask
 		}
 	}
 	return New(s.name, array.FilterTyped(ta, mask))
@@ -354,60 +361,59 @@ func uniqueUInt32(s *Series) *Series {
 		return s
 	}
 	vals := ta.Values()
-	mask := bitmap.NewEmpty(n)
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htVals := make([]uint32, cap_)
+	htOcc := make([]byte, cap_)
 
 	if !s.HasNulls() {
+		result := make([]uint32, 0, n)
 		for i := 0; i < n; i++ {
-			h := uint64(vals[i]) * fibHash64
+			v := vals[i]
+			h := uint64(v) * fibHash64
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
+				if htOcc[pos] == 0 {
+					htOcc[pos] = 1
+					htVals[pos] = v
+					result = append(result, v)
 					break
 				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
+				if htVals[pos] == v {
 					break
 				}
 				pos = (pos + 1) & hmask
 			}
 		}
-	} else {
-		validity := ta.Validity()
-		seenNull := false
-		for i := 0; i < n; i++ {
-			if validity != nil && !validity.IsSet(i) {
-				if !seenNull {
-					seenNull = true
-					mask.Set(i)
-				}
-				continue
+		return New(s.name, array.NewTypedArray(result, dtype.UInt32, nil))
+	}
+
+	mask := bitmap.NewEmpty(n)
+	validity := ta.Validity()
+	seenNull := false
+	for i := 0; i < n; i++ {
+		if validity != nil && !validity.IsSet(i) {
+			if !seenNull {
+				seenNull = true
+				mask.Set(i)
 			}
-			h := uint64(vals[i]) * fibHash64
-			pos := h & hmask
-			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
-					break
-				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break
-				}
-				pos = (pos + 1) & hmask
+			continue
+		}
+		v := vals[i]
+		h := uint64(v) * fibHash64
+		pos := h & hmask
+		for {
+			if htOcc[pos] == 0 {
+				htOcc[pos] = 1
+				htVals[pos] = v
+				mask.Set(i)
+				break
 			}
+			if htVals[pos] == v {
+				break
+			}
+			pos = (pos + 1) & hmask
 		}
 	}
 	return New(s.name, array.FilterTyped(ta, mask))
@@ -425,60 +431,59 @@ func uniqueFloat32(s *Series) *Series {
 		return s
 	}
 	vals := ta.Values()
-	mask := bitmap.NewEmpty(n)
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htVals := make([]float32, cap_)
+	htOcc := make([]byte, cap_)
 
 	if !s.HasNulls() {
+		result := make([]float32, 0, n)
 		for i := 0; i < n; i++ {
-			h := uint64(math.Float32bits(vals[i])) * fibHash64
+			v := vals[i]
+			h := uint64(math.Float32bits(v)) * fibHash64
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
+				if htOcc[pos] == 0 {
+					htOcc[pos] = 1
+					htVals[pos] = v
+					result = append(result, v)
 					break
 				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
+				if htVals[pos] == v {
 					break
 				}
 				pos = (pos + 1) & hmask
 			}
 		}
-	} else {
-		validity := ta.Validity()
-		seenNull := false
-		for i := 0; i < n; i++ {
-			if validity != nil && !validity.IsSet(i) {
-				if !seenNull {
-					seenNull = true
-					mask.Set(i)
-				}
-				continue
+		return New(s.name, array.NewTypedArray(result, dtype.Float32, nil))
+	}
+
+	mask := bitmap.NewEmpty(n)
+	validity := ta.Validity()
+	seenNull := false
+	for i := 0; i < n; i++ {
+		if validity != nil && !validity.IsSet(i) {
+			if !seenNull {
+				seenNull = true
+				mask.Set(i)
 			}
-			h := uint64(math.Float32bits(vals[i])) * fibHash64
-			pos := h & hmask
-			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
-					mask.Set(i)
-					break
-				}
-				if hashes[pos] == h && vals[idx] == vals[i] {
-					break
-				}
-				pos = (pos + 1) & hmask
+			continue
+		}
+		v := vals[i]
+		h := uint64(math.Float32bits(v)) * fibHash64
+		pos := h & hmask
+		for {
+			if htOcc[pos] == 0 {
+				htOcc[pos] = 1
+				htVals[pos] = v
+				mask.Set(i)
+				break
 			}
+			if htVals[pos] == v {
+				break
+			}
+			pos = (pos + 1) & hmask
 		}
 	}
 	return New(s.name, array.FilterTyped(ta, mask))
@@ -499,26 +504,22 @@ func uniqueString(s *Series) *Series {
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	indices := make([]int32, cap_)
-	hashes := make([]uint64, cap_)
-	for i := range indices {
-		indices[i] = htEmpty
-	}
+	htHashes := make([]uint64, cap_)
+	htIndices := make([]int32, cap_)
 
 	if !s.HasNulls() {
 		for i := 0; i < n; i++ {
 			b := sa.ValueBytes(i)
-			h := fnvHashBytes(b)
+			h := ensureNonZero(fnvHashBytes(b))
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
+				if htHashes[pos] == 0 {
+					htHashes[pos] = h
+					htIndices[pos] = int32(i)
 					mask.Set(i)
 					break
 				}
-				if hashes[pos] == h && bytes.Equal(sa.ValueBytes(int(idx)), b) {
+				if htHashes[pos] == h && bytes.Equal(sa.ValueBytes(int(htIndices[pos])), b) {
 					break
 				}
 				pos = (pos + 1) & hmask
@@ -536,17 +537,16 @@ func uniqueString(s *Series) *Series {
 				continue
 			}
 			b := sa.ValueBytes(i)
-			h := fnvHashBytes(b)
+			h := ensureNonZero(fnvHashBytes(b))
 			pos := h & hmask
 			for {
-				idx := indices[pos]
-				if idx == htEmpty {
-					indices[pos] = int32(i)
-					hashes[pos] = h
+				if htHashes[pos] == 0 {
+					htHashes[pos] = h
+					htIndices[pos] = int32(i)
 					mask.Set(i)
 					break
 				}
-				if hashes[pos] == h && bytes.Equal(sa.ValueBytes(int(idx)), b) {
+				if htHashes[pos] == h && bytes.Equal(sa.ValueBytes(int(htIndices[pos])), b) {
 					break
 				}
 				pos = (pos + 1) & hmask
@@ -674,7 +674,7 @@ func isDuplicatedInt64(s *Series) *Series {
 
 	cap_ := nextPow2(n * 2)
 	hmask := uint64(cap_ - 1)
-	htIndices := make([]int32, cap_)  // index into entries
+	htIndices := make([]int32, cap_) // index into entries
 	htHashes := make([]uint64, cap_)
 	for i := range htIndices {
 		htIndices[i] = htEmpty
@@ -1082,4 +1082,3 @@ func isDuplicatedString(s *Series) *Series {
 	}
 	return NewBoolean(s.name, result)
 }
-

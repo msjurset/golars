@@ -2,6 +2,7 @@ package expr
 
 import (
 	"fmt"
+	"math/bits"
 
 	"github.com/msjurset/golars/internal/array"
 	"github.com/msjurset/golars/internal/bitmap"
@@ -62,6 +63,15 @@ type whenExpr struct {
 	otherwiseVal Expr
 }
 
+// evaluateAsScalar evaluates an expression. If it's a literal, returns a
+// length-1 series to avoid broadcasting, enabling scalar fast paths.
+func evaluateAsScalar(e Expr, ctx *Context) (*series.Series, error) {
+	if lit, ok := e.(*litExpr); ok {
+		return broadcastLiteral(lit.value, 1)
+	}
+	return e.Evaluate(ctx)
+}
+
 func (w *whenExpr) Evaluate(ctx *Context) (*series.Series, error) {
 	cond, err := w.condition.Evaluate(ctx)
 	if err != nil {
@@ -70,14 +80,14 @@ func (w *whenExpr) Evaluate(ctx *Context) (*series.Series, error) {
 	if cond.DataType() != dtype.Boolean {
 		return nil, fmt.Errorf("golars: When condition must be boolean, got %s", cond.DataType())
 	}
-	thenS, err := w.thenVal.Evaluate(ctx)
+	thenS, err := evaluateAsScalar(w.thenVal, ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	var otherS *series.Series
 	if w.otherwiseVal != nil {
-		otherS, err = w.otherwiseVal.Evaluate(ctx)
+		otherS, err = evaluateAsScalar(w.otherwiseVal, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -111,9 +121,11 @@ func (w *whenExpr) Evaluate(ctx *Context) (*series.Series, error) {
 
 	switch dt {
 	case dtype.Int64:
-		return whenInt64(ba, thenS, otherS, n, resultName)
+		return whenTyped[int64](ba, thenS, otherS, n, resultName, dt)
 	case dtype.Float64:
-		return whenFloat64(ba, thenS, otherS, n, resultName)
+		return whenTyped[float64](ba, thenS, otherS, n, resultName, dt)
+	case dtype.Int32, dtype.Date:
+		return whenTyped[int32](ba, thenS, otherS, n, resultName, dt)
 	case dtype.String:
 		return whenString(ba, thenS, otherS, n, resultName)
 	case dtype.Boolean:
@@ -130,96 +142,276 @@ func (w *whenExpr) String() string {
 	return fmt.Sprintf("when(%s).then(%s)", w.condition.String(), w.thenVal.String())
 }
 
-func whenInt64(ba *array.BooleanArray, thenS, otherS *series.Series, n int, name string) (*series.Series, error) {
-	result := make([]int64, n)
-	validity := bitmap.New(n)
-	for i := 0; i < n; i++ {
-		if ba.IsNull(i) {
-			validity.Clear(i)
-			continue
-		}
-		if ba.Value(i) {
-			v, ok := thenS.GetInt64(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
-			}
-		} else if otherS != nil {
-			v, ok := otherS.GetInt64(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
-			}
-		} else {
-			validity.Clear(i)
-		}
-	}
-	if validity.AllSet() {
-		return series.NewInt64(name, result), nil
-	}
-	return series.New(name, array.NewInt64Array(result, validity)), nil
-}
+// whenTyped handles When/Then/Otherwise for numeric types using bulk array access.
+func whenTyped[T any](ba *array.BooleanArray, thenS, otherS *series.Series, n int, name string, dt dtype.DataType) (*series.Series, error) {
+	result := make([]T, n)
+	condWords := ba.DataBitmap().Words()
+	condHasNulls := ba.Validity() != nil
 
-func whenFloat64(ba *array.BooleanArray, thenS, otherS *series.Series, n int, name string) (*series.Series, error) {
-	result := make([]float64, n)
+	// Extract scalar values or array slices for then/otherwise
+	thenArr := thenS.Array().(*array.TypedArray[T])
+	thenVals := thenArr.Values()
+	thenScalar := len(thenVals) == 1
+	thenHasNulls := thenArr.Validity() != nil
+
+	var otherVals []T
+	var otherScalar bool
+	var otherHasNulls bool
+	hasOther := otherS != nil
+	if hasOther {
+		otherArr := otherS.Array().(*array.TypedArray[T])
+		otherVals = otherArr.Values()
+		otherScalar = len(otherVals) == 1
+		otherHasNulls = otherArr.Validity() != nil
+	}
+
+	anyNulls := condHasNulls || thenHasNulls || otherHasNulls || !hasOther
+
+	// Fast path: no nulls anywhere, both scalar
+	if !anyNulls && thenScalar && otherScalar {
+		tv := thenVals[0]
+		ov := otherVals[0]
+		for wi, w := range condWords {
+			base := wi * 64
+			remaining := n - base
+			if remaining > 64 {
+				remaining = 64
+			}
+			// Set all to otherwise value, then overwrite true positions
+			for j := 0; j < remaining; j++ {
+				result[base+j] = ov
+			}
+			for bw := w; bw != 0; {
+				j := bits.TrailingZeros64(bw)
+				result[base+j] = tv
+				bw &= bw - 1
+			}
+		}
+		return series.New(name, array.NewTypedArray(result, dt, nil)), nil
+	}
+
+	// Fast path: no nulls anywhere, scalar then + array other (or vice versa)
+	if !anyNulls && hasOther {
+		for wi, w := range condWords {
+			base := wi * 64
+			remaining := n - base
+			if remaining > 64 {
+				remaining = 64
+			}
+			if thenScalar && !otherScalar {
+				tv := thenVals[0]
+				copy(result[base:base+remaining], otherVals[base:base+remaining])
+				for bw := w; bw != 0; {
+					j := bits.TrailingZeros64(bw)
+					result[base+j] = tv
+					bw &= bw - 1
+				}
+			} else if !thenScalar && otherScalar {
+				ov := otherVals[0]
+				copy(result[base:base+remaining], thenVals[base:base+remaining])
+				inverted := ^w
+				if remaining < 64 {
+					inverted &= (1 << remaining) - 1
+				}
+				for bw := inverted; bw != 0; {
+					j := bits.TrailingZeros64(bw)
+					result[base+j] = ov
+					bw &= bw - 1
+				}
+			} else {
+				// Both arrays, no nulls
+				copy(result[base:base+remaining], otherVals[base:base+remaining])
+				for bw := w; bw != 0; {
+					j := bits.TrailingZeros64(bw)
+					result[base+j] = thenVals[base+j]
+					bw &= bw - 1
+				}
+			}
+		}
+		return series.New(name, array.NewTypedArray(result, dt, nil)), nil
+	}
+
+	// General path with null handling
 	validity := bitmap.New(n)
-	for i := 0; i < n; i++ {
-		if ba.IsNull(i) {
-			validity.Clear(i)
-			continue
-		}
-		if ba.Value(i) {
-			v, ok := thenS.GetFloat64(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
-			}
-		} else if otherS != nil {
-			v, ok := otherS.GetFloat64(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
-			}
-		} else {
-			validity.Clear(i)
-		}
+	var condValWords []uint64
+	if condHasNulls {
+		condValWords = ba.Validity().Words()
 	}
+	var thenValBm *bitmap.Bitmap
+	if thenHasNulls {
+		thenValBm = thenArr.Validity()
+	}
+	var otherValBm *bitmap.Bitmap
+	if otherHasNulls {
+		otherArr := otherS.Array().(*array.TypedArray[T])
+		otherValBm = otherArr.Validity()
+	}
+
+	for wi, cw := range condWords {
+		base := wi * 64
+		remaining := n - base
+		if remaining > 64 {
+			remaining = 64
+		}
+
+		validWord := uint64(^uint64(0))
+		if remaining < 64 {
+			validWord = (1 << remaining) - 1
+		}
+
+		// Mask out null condition positions
+		condValid := validWord
+		if condHasNulls {
+			condValid = condValWords[wi]
+		}
+
+		trueMask := cw & condValid
+		falseMask := (^cw) & condValid
+		nullCondMask := validWord &^ condValid
+
+		// Fill from then branch (true positions)
+		if trueMask != 0 {
+			if thenScalar {
+				tv := thenVals[0]
+				for b := trueMask; b != 0; {
+					j := bits.TrailingZeros64(b)
+					result[base+j] = tv
+					b &= b - 1
+				}
+			} else {
+				for b := trueMask; b != 0; {
+					j := bits.TrailingZeros64(b)
+					result[base+j] = thenVals[base+j]
+					b &= b - 1
+				}
+			}
+			// Check then nulls
+			if thenHasNulls {
+				thenInvalid := trueMask &^ thenValBm.Words()[wi]
+				validWord &^= thenInvalid
+			}
+		}
+
+		// Fill from otherwise branch (false positions)
+		if falseMask != 0 {
+			if hasOther {
+				if otherScalar {
+					ov := otherVals[0]
+					for b := falseMask; b != 0; {
+						j := bits.TrailingZeros64(b)
+						result[base+j] = ov
+						b &= b - 1
+					}
+				} else {
+					for b := falseMask; b != 0; {
+						j := bits.TrailingZeros64(b)
+						result[base+j] = otherVals[base+j]
+						b &= b - 1
+					}
+				}
+				if otherHasNulls {
+					otherInvalid := falseMask &^ otherValBm.Words()[wi]
+					validWord &^= otherInvalid
+				}
+			} else {
+				// No otherwise: false positions are null
+				validWord &^= falseMask
+			}
+		}
+
+		// Null condition positions are null in result
+		validWord &^= nullCondMask
+
+		validity.SetWord(wi, validWord)
+	}
+
 	if validity.AllSet() {
-		return series.NewFloat64(name, result), nil
+		return series.New(name, array.NewTypedArray(result, dt, nil)), nil
 	}
-	return series.New(name, array.NewFloat64Array(result, validity)), nil
+	return series.New(name, array.NewTypedArray(result, dt, validity)), nil
 }
 
 func whenString(ba *array.BooleanArray, thenS, otherS *series.Series, n int, name string) (*series.Series, error) {
 	result := make([]string, n)
 	validity := bitmap.New(n)
-	for i := 0; i < n; i++ {
-		if ba.IsNull(i) {
-			validity.Clear(i)
-			continue
+	condWords := ba.DataBitmap().Words()
+	condHasNulls := ba.Validity() != nil
+
+	thenSA := thenS.StringArray()
+	thenScalar := thenSA.Len() == 1
+
+	var otherSA *array.StringArray
+	hasOther := otherS != nil
+	otherScalar := false
+	if hasOther {
+		otherSA = otherS.StringArray()
+		otherScalar = otherSA.Len() == 1
+	}
+
+	var condValWords []uint64
+	if condHasNulls {
+		condValWords = ba.Validity().Words()
+	}
+
+	for wi, cw := range condWords {
+		base := wi * 64
+		remaining := n - base
+		if remaining > 64 {
+			remaining = 64
 		}
-		if ba.Value(i) {
-			v, ok := thenS.GetString(i)
-			if !ok {
-				validity.Clear(i)
+
+		validWord := uint64(^uint64(0))
+		if remaining < 64 {
+			validWord = (1 << remaining) - 1
+		}
+
+		condValid := validWord
+		if condHasNulls {
+			condValid = condValWords[wi]
+		}
+
+		trueMask := cw & condValid
+		falseMask := (^cw) & condValid
+		nullCondMask := validWord &^ condValid
+
+		for b := trueMask; b != 0; {
+			j := bits.TrailingZeros64(b)
+			idx := base + j
+			if thenSA.IsValid(idx) || thenSA.Validity() == nil {
+				if thenScalar {
+					result[idx] = thenSA.Value(0)
+				} else {
+					result[idx] = thenSA.Value(idx)
+				}
 			} else {
-				result[i] = v
+				validWord &^= 1 << j
 			}
-		} else if otherS != nil {
-			v, ok := otherS.GetString(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
+			b &= b - 1
+		}
+
+		if hasOther {
+			for b := falseMask; b != 0; {
+				j := bits.TrailingZeros64(b)
+				idx := base + j
+				if otherSA.IsValid(idx) || otherSA.Validity() == nil {
+					if otherScalar {
+						result[idx] = otherSA.Value(0)
+					} else {
+						result[idx] = otherSA.Value(idx)
+					}
+				} else {
+					validWord &^= 1 << j
+				}
+				b &= b - 1
 			}
 		} else {
-			validity.Clear(i)
+			validWord &^= falseMask
 		}
+
+		validWord &^= nullCondMask
+		validity.SetWord(wi, validWord)
 	}
+
 	if validity.AllSet() {
 		return series.NewString(name, result), nil
 	}
@@ -227,33 +419,97 @@ func whenString(ba *array.BooleanArray, thenS, otherS *series.Series, n int, nam
 }
 
 func whenBool(ba *array.BooleanArray, thenS, otherS *series.Series, n int, name string) (*series.Series, error) {
-	result := make([]bool, n)
+	resultBm := bitmap.NewEmpty(n)
 	validity := bitmap.New(n)
-	for i := 0; i < n; i++ {
-		if ba.IsNull(i) {
-			validity.Clear(i)
-			continue
+	condWords := ba.DataBitmap().Words()
+	condHasNulls := ba.Validity() != nil
+
+	thenBA := thenS.BooleanArray()
+	thenWords := thenBA.DataBitmap().Words()
+	thenScalar := thenBA.Len() == 1
+	thenHasNulls := thenBA.Validity() != nil
+
+	var otherWords []uint64
+	hasOther := otherS != nil
+	otherScalar := false
+	otherHasNulls := false
+	if hasOther {
+		otherBA := otherS.BooleanArray()
+		otherWords = otherBA.DataBitmap().Words()
+		otherScalar = otherBA.Len() == 1
+		otherHasNulls = otherBA.Validity() != nil
+	}
+
+	anyNulls := condHasNulls || thenHasNulls || otherHasNulls || !hasOther
+	resultWords := resultBm.Words()
+
+	var condValWords []uint64
+	if condHasNulls {
+		condValWords = ba.Validity().Words()
+	}
+
+	for wi, cw := range condWords {
+		remaining := n - wi*64
+		if remaining > 64 {
+			remaining = 64
 		}
-		if ba.Value(i) {
-			v, ok := thenS.GetBool(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
+
+		wordMask := uint64(^uint64(0))
+		if remaining < 64 {
+			wordMask = (1 << remaining) - 1
+		}
+
+		condValid := wordMask
+		if condHasNulls {
+			condValid = condValWords[wi]
+		}
+
+		trueMask := cw & condValid
+		falseMask := (^cw) & condValid
+
+		// Get then values for true positions
+		var thenW uint64
+		if thenScalar {
+			if thenWords[0]&1 != 0 {
+				thenW = trueMask
 			}
-		} else if otherS != nil {
-			v, ok := otherS.GetBool(i)
-			if !ok {
-				validity.Clear(i)
-			} else {
-				result[i] = v
+		} else if wi < len(thenWords) {
+			thenW = thenWords[wi] & trueMask
+		}
+
+		// Get other values for false positions
+		var otherW uint64
+		if hasOther {
+			if otherScalar {
+				if otherWords[0]&1 != 0 {
+					otherW = falseMask
+				}
+			} else if wi < len(otherWords) {
+				otherW = otherWords[wi] & falseMask
 			}
-		} else {
-			validity.Clear(i)
+		}
+
+		resultWords[wi] = thenW | otherW
+
+		if anyNulls {
+			validWord := wordMask
+			validWord &^= wordMask &^ condValid // null condition
+			if !hasOther {
+				validWord &^= falseMask
+			}
+			if thenHasNulls {
+				validWord &^= trueMask &^ thenBA.Validity().Words()[wi]
+			}
+			if otherHasNulls {
+				otherBA := otherS.BooleanArray()
+				validWord &^= falseMask &^ otherBA.Validity().Words()[wi]
+			}
+			validity.SetWord(wi, validWord)
 		}
 	}
-	if validity.AllSet() {
-		return series.NewBoolean(name, result), nil
+
+	if !anyNulls || validity.AllSet() {
+		return series.New(name, array.NewBooleanArrayFromBitmap(resultBm, nil)), nil
 	}
-	return series.New(name, array.NewBooleanArray(result, validity)), nil
+	return series.New(name, array.NewBooleanArrayFromBitmap(resultBm, validity)), nil
 }
