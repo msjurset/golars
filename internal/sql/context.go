@@ -5,8 +5,10 @@ package sql
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/msjurset/golars/internal/dataframe"
+	"github.com/msjurset/golars/internal/series"
 )
 
 // Context holds registered DataFrames that can be queried via SQL.
@@ -36,12 +38,36 @@ func (c *Context) Execute(query string) (*dataframe.DataFrame, error) {
 	return c.executeStmt(stmt)
 }
 
+func prefixColumns(df *dataframe.DataFrame, prefix string) *dataframe.DataFrame {
+	if prefix == "" {
+		return df
+	}
+	cols := make([]*series.Series, df.Schema().Len())
+	for i := 0; i < df.Schema().Len(); i++ {
+		f := df.Schema().Field(i)
+		col, _ := df.Column(f.Name)
+		cols[i] = col.Rename(prefix + "." + f.Name)
+	}
+	res, _ := dataframe.New(cols...)
+	return res
+}
+
 func (c *Context) executeStmt(stmt *SelectStmt) (*dataframe.DataFrame, error) {
 	// Resolve FROM
 	df, ok := c.tables[stmt.From]
 	if !ok {
 		return nil, fmt.Errorf("golars: sql: table %q not found", stmt.From)
 	}
+	
+	fromAlias := stmt.FromAlias
+	if fromAlias == "" {
+		fromAlias = stmt.From
+	}
+	df = prefixColumns(df, fromAlias)
+
+	// Map of alias -> table name for resolving bare columns
+	aliases := make(map[string]string)
+	aliases[fromAlias] = stmt.From
 
 	// JOIN
 	for _, j := range stmt.Joins {
@@ -49,6 +75,14 @@ func (c *Context) executeStmt(stmt *SelectStmt) (*dataframe.DataFrame, error) {
 		if !ok {
 			return nil, fmt.Errorf("golars: sql: join table %q not found", j.Table)
 		}
+		
+		jAlias := j.Alias
+		if jAlias == "" {
+			jAlias = j.Table
+		}
+		aliases[jAlias] = j.Table
+		rightDF = prefixColumns(rightDF, jAlias)
+
 		var jt dataframe.JoinType
 		switch j.Type {
 		case "INNER":
@@ -65,10 +99,67 @@ func (c *Context) executeStmt(stmt *SelectStmt) (*dataframe.DataFrame, error) {
 			jt = dataframe.InnerJoin
 		}
 		var err error
-		df, err = df.Join(rightDF, []string{j.On}, jt)
+		
+		leftOn := j.LeftOn
+		rightOn := j.RightOn
+		// if leftOn does not have a dot, try to prepend fromAlias
+		if leftOn != "" && !strings.Contains(leftOn, ".") {
+			leftOn = fromAlias + "." + leftOn
+		}
+		if rightOn != "" && !strings.Contains(rightOn, ".") {
+			rightOn = jAlias + "." + rightOn
+		}
+		
+		df, err = df.JoinOn(rightDF, []string{leftOn}, []string{rightOn}, jt)
 		if err != nil {
 			return nil, fmt.Errorf("golars: sql: join: %w", err)
 		}
+	}
+	
+	// Resolve bare columns
+	resolveName := func(name string) string {
+		if strings.Contains(name, ".") || name == "*" {
+			return name
+		}
+		// find matching column in df
+		for i := 0; i < df.Schema().Len(); i++ {
+			f := df.Schema().Field(i)
+			if strings.HasSuffix(f.Name, "."+name) {
+				return f.Name
+			}
+		}
+		return name
+	}
+	
+	for i, col := range stmt.Columns {
+		stmt.Columns[i].Name = resolveName(col.Name)
+	}
+	var resolveExpr func(e SQLExpr) SQLExpr
+	resolveExpr = func(e SQLExpr) SQLExpr {
+		switch v := e.(type) {
+		case ColumnRef:
+			return ColumnRef{Name: resolveName(v.Name)}
+		case BinaryOp:
+			return BinaryOp{Left: resolveExpr(v.Left), Op: v.Op, Right: resolveExpr(v.Right)}
+		default:
+			return e
+		}
+	}
+	if stmt.Where != nil {
+		stmt.Where = resolveExpr(stmt.Where)
+	}
+	for i, g := range stmt.GroupBy {
+		stmt.GroupBy[i] = resolveName(g)
+	}
+	for i, o := range stmt.OrderBy {
+		colName := o.Column
+		for _, sc := range stmt.Columns {
+			if sc.Alias == colName {
+				colName = sc.Name
+				break
+			}
+		}
+		stmt.OrderBy[i].Column = resolveName(colName)
 	}
 
 	// WHERE
@@ -101,26 +192,6 @@ func (c *Context) executeStmt(stmt *SelectStmt) (*dataframe.DataFrame, error) {
 		}
 	}
 
-	// SELECT (projection)
-	if !stmt.SelectAll {
-		colNames := make([]string, 0, len(stmt.Columns))
-		for _, col := range stmt.Columns {
-			if col.Alias != "" {
-				colNames = append(colNames, col.Alias)
-			} else {
-				colNames = append(colNames, col.Name)
-			}
-		}
-		// Only select if not doing GROUP BY (which already built the right columns)
-		if len(stmt.GroupBy) == 0 {
-			var err error
-			df, err = df.Select(colNames...)
-			if err != nil {
-				return nil, fmt.Errorf("golars: sql: select: %w", err)
-			}
-		}
-	}
-
 	// ORDER BY
 	if len(stmt.OrderBy) > 0 {
 		cols := make([]string, len(stmt.OrderBy))
@@ -134,6 +205,61 @@ func (c *Context) executeStmt(stmt *SelectStmt) (*dataframe.DataFrame, error) {
 		if err != nil {
 			return nil, fmt.Errorf("golars: sql: order by: %w", err)
 		}
+	}
+
+	// SELECT (projection)
+	if stmt.SelectAll {
+		for i := 0; i < df.Schema().Len(); i++ {
+			f := df.Schema().Field(i)
+			stmt.Columns = append(stmt.Columns, SelectColumn{Name: f.Name})
+		}
+		stmt.SelectAll = false
+	}
+
+	if !stmt.SelectAll {
+		colNames := make([]string, 0, len(stmt.Columns))
+		for _, col := range stmt.Columns {
+			colNames = append(colNames, col.Name)
+		}
+		if len(stmt.GroupBy) == 0 {
+			var err error
+			df, err = df.Select(colNames...)
+			if err != nil {
+				return nil, fmt.Errorf("golars: sql: select: %w", err)
+			}
+		}
+		// Rename columns to strip table prefix or apply alias
+		finalCols := make([]*series.Series, df.Schema().Len())
+		for i := 0; i < df.Schema().Len(); i++ {
+			f := df.Schema().Field(i)
+			c, _ := df.Column(f.Name)
+			newName := f.Name
+			
+			// Find corresponding select column
+			for _, sc := range stmt.Columns {
+				if sc.Name == f.Name {
+					if sc.Alias != "" {
+						newName = sc.Alias
+					} else {
+						parts := strings.Split(f.Name, ".")
+						if len(parts) > 1 {
+							newName = parts[1]
+						}
+					}
+					break
+				}
+			}
+			
+			// Handle collisions? Just rename. If collision occurs, golars DataFrame New will error out.
+			// Let's ensure uniqueness to avoid golars panic.
+			for j := 0; j < i; j++ {
+				if finalCols[j].Name() == newName {
+					newName = newName + "_" + strings.Split(f.Name, ".")[0]
+				}
+			}
+			finalCols[i] = c.Rename(newName)
+		}
+		df, _ = dataframe.New(finalCols...)
 	}
 
 	// LIMIT

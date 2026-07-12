@@ -12,6 +12,7 @@ type SelectStmt struct {
 	SelectAll bool
 	Columns   []SelectColumn
 	From      string
+	FromAlias string
 	Joins     []JoinClause
 	Where     SQLExpr
 	GroupBy   []string
@@ -28,9 +29,11 @@ type SelectColumn struct {
 
 // JoinClause represents a JOIN in the query.
 type JoinClause struct {
-	Type  string // INNER, LEFT, RIGHT, FULL, CROSS
-	Table string
-	On    string // single column name for now
+	Type    string // INNER, LEFT, RIGHT, FULL, CROSS
+	Table   string
+	Alias   string
+	LeftOn  string
+	RightOn string
 }
 
 // OrderByClause represents an ORDER BY column.
@@ -157,6 +160,9 @@ func (p *parser) parseSelect() (*SelectStmt, error) {
 	}
 	t := p.next()
 	stmt.From = t.val
+	if p.peek().typ == tokIdent && !p.isKeyword("JOIN") && !p.isKeyword("INNER") && !p.isKeyword("LEFT") && !p.isKeyword("RIGHT") && !p.isKeyword("FULL") && !p.isKeyword("CROSS") && !p.isKeyword("WHERE") && !p.isKeyword("GROUP") && !p.isKeyword("ORDER") && !p.isKeyword("LIMIT") {
+		stmt.FromAlias = p.next().val
+	}
 
 	// JOINs
 	for p.isKeyword("JOIN") || p.isKeyword("INNER") || p.isKeyword("LEFT") ||
@@ -268,7 +274,12 @@ func (p *parser) parseColumn() (SelectColumn, error) {
 	}
 
 	t := p.next()
-	col := SelectColumn{Name: t.val}
+	colName := t.val
+	if p.peek().typ == tokDot {
+		p.next() // skip dot
+		colName = colName + "." + p.next().val
+	}
+	col := SelectColumn{Name: colName}
 
 	if p.isKeyword("AS") {
 		p.next()
@@ -304,24 +315,25 @@ func (p *parser) parseJoin() (JoinClause, error) {
 
 	j := JoinClause{Type: jt, Table: table}
 
+	if p.peek().typ == tokIdent && !p.isKeyword("ON") {
+		j.Alias = p.next().val
+	}
+
 	if p.isKeyword("ON") {
 		p.next()
-		// Parse simple: left.col = right.col or just col = col
 		left := p.next().val
-		// Handle table.col notation
 		if p.peek().typ == tokDot {
 			p.next()
-			left = p.next().val
+			left = left + "." + p.next().val
 		}
 		p.next() // skip =
 		right := p.next().val
 		if p.peek().typ == tokDot {
 			p.next()
-			right = p.next().val
+			right = right + "." + p.next().val
 		}
-		// Use the column name (should be the same for both sides)
-		j.On = left
-		_ = right
+		j.LeftOn = left
+		j.RightOn = right
 	}
 
 	return j, nil
@@ -395,7 +407,12 @@ func (p *parser) parsePrimary() (SQLExpr, error) {
 		return LiteralInt{Value: v}, nil
 	}
 
-	return ColumnRef{Name: t.val}, nil
+	colName := t.val
+	if p.peek().typ == tokDot {
+		p.next() // skip dot
+		colName = colName + "." + p.next().val
+	}
+	return ColumnRef{Name: colName}, nil
 }
 
 func tokenize(input string) []token {
