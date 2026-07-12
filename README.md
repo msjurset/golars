@@ -18,7 +18,7 @@ import "github.com/msjurset/golars"
 - **Lazy evaluation** — query optimization with predicate pushdown, projection pushdown, constant folding, and CSE
 - **GroupBy & Join** — hash-based grouping (map-based and expression-based) and all 7 join types
 - **Window functions** — SQL-style `Over(partitionBy...)` expressions
-- **SQL interface** — register DataFrames and query with SQL
+- **SQL interface** — register DataFrames and query with standard SQL, including full `JOIN` and table alias resolution (`SELECT e.name FROM emps e`)
 - **I/O** — CSV, JSON, NDJSON, Parquet (with Snappy compression), Excel (.xlsx), `database/sql`
 - **Temporal types** — Date, DateTime, Time, Duration with `.Dt()` namespace
 - **Go 1.24+** — uses generics and range-over-func iterators
